@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Run jev and keep it up to date. Every --every seconds this fetches; when the branch's upstream has new commits that
-fast-forward onto a clean checkout, it pulls them, and restarts the bot unless they only touch files the bot never loads
-(CI, docs, tests, dev scripts). It also restarts the bot if it exits on its own.
+fast-forward onto a clean checkout, it pulls them. Unless they only touch files the bot never loads (CI, docs, tests, dev
+scripts), it stops the bot and replaces itself with the new run.py, which starts the bot on the new code: so a change to
+run.py takes effect too, with no service restart. It also restarts the bot if it exits on its own.
 
     python3 run.py                          # runs: mise exec -- uv run --with-requirements requirements.txt jev_bot.py
     python3 run.py -- python jev_bot.py     # or any other command
@@ -17,6 +18,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -65,6 +67,11 @@ def update():
     return git("diff", "--name-only", head, "HEAD").stdout.splitlines()
 
 
+# Run the checkout's run.py, as pulled, in this process's place: same pid, arguments and terminal
+def reexec():
+    os.execv(sys.executable, [sys.executable, str(HERE / "run.py"), *sys.argv[1:]])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--every", type=int, default=60, help="seconds between update checks (default 60)")
@@ -88,7 +95,8 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    update()  # start on the latest code
+    if update():  # start on the latest code, this script included
+        reexec()
     quick_exits = 0
     while not presses:
         say(f"starting: {' '.join(cmd)}")
@@ -114,8 +122,10 @@ def main():
             say(f"bot still running after {FINISH_TIMEOUT}s — killing it")
             os.killpg(bot.pid, signal.SIGKILL)
             bot.wait()
-        if presses or restarting:
+        if presses:
             continue
+        if restarting:
+            reexec()
         # Exited on its own: restart, backing off if it keeps dying quickly (a broken update, say)
         quick_exits = quick_exits + 1 if time.monotonic() - started < 60 else 0
         delay = min(5 * 2 ** quick_exits, 300)
@@ -124,7 +134,8 @@ def main():
             if presses:
                 break
             time.sleep(1)
-        update()  # a fix may have been pushed
+        if not presses and update():  # a fix may have been pushed
+            reexec()
     say("stopped")
 
 

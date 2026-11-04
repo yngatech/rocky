@@ -2,7 +2,7 @@
 
 ## The live bot
 
-- `run.py` pulls `master` within a minute of a merge and restarts the bot, so merging deploys. It skips the restart when a merge only touches files the bot never loads (`NO_RESTART` in `run.py`). After a merge, check the bot came back up and that the change behaves as expected. `run.py` doesn't reload itself: after a change to it, restart the service (`systemctl --user restart jevbot`) once the merge is pulled.
+- `run.py` pulls `master` within a minute of a merge and restarts the bot, so merging deploys. It skips the restart when a merge only touches files the bot never loads (`NO_RESTART` in `run.py`). After a merge, check the bot came back up and that the change behaves as expected.
 - In a worktree, `.env` and `custom_vocab.txt` are symlinks to the live checkout's files. Never write test data to them: they're gitignored and have no copy to restore from. Put test files in `.scratch/` or set env vars inline.
 
 ## Privacy
