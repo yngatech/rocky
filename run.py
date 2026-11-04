@@ -19,9 +19,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-# Through mise when it's installed, so the bot runs on the Python and uv pinned in .python-version and mise.toml, which
-# CI tests on. mise installs a pin it doesn't have yet, such as one Renovate just bumped, and execs uv in its own place,
-# so the bot's process is still uv's.
+# Through mise when it's installed: it installs a newly bumped pin (.python-version, mise.toml) and execs uv in place.
 DEFAULT_CMD = (["mise", "exec", "--"] if shutil.which("mise") else []) + [
     "uv", "run", "--with-requirements", "requirements.txt", "jev_bot.py"]
 FINISH_TIMEOUT = 300    # seconds to wait for the bot to exit after asking it to stop, before killing it

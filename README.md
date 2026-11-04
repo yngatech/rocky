@@ -15,7 +15,7 @@ Install [mise](https://mise.jdx.dev/getting-started.html), then run:
 scripts/setup.sh
 ```
 
-It installs the Python pinned in `.python-version` and the uv pinned in `mise.toml`, the toolchain CI tests on, and fetches the dependencies in `requirements.txt`. In a worktree it also links `.env` and `custom_vocab.txt` from the main clone. It's safe to re-run. Without mise it warns and goes on with the uv on `PATH`, which still reads `.python-version`. Activate mise in your shell (`mise activate`) or prefix commands with `mise exec --` to use the pins; the script warns if another `uv` or `python` comes first on `PATH`.
+It installs the Python pinned in `.python-version` and the uv pinned in `mise.toml`, the toolchain CI tests on, and fetches the dependencies in `requirements.txt`. In a worktree it also links `.env` and `custom_vocab.txt` from the main clone. It's safe to re-run. Without mise it warns and goes on with the uv on `PATH`, which still reads `.python-version`. Activate mise in your shell (`mise activate`) or prefix commands with `mise exec --` to use the pins.
 
 Create `.env`:
 
