@@ -3,7 +3,7 @@
 Run jev and keep it up to date. Every --every seconds this fetches; when the branch's upstream has new commits that
 fast-forward onto a clean checkout, it pulls them. Unless they only touch files the bot never loads (CI, docs, tests, dev
 scripts), it stops the bot and replaces itself with the new run.py, which starts the bot on the new code: so a change to
-run.py takes effect too, with no service restart. It also restarts the bot if it exits on its own.
+run.py takes effect too, with no service restart. If the bot exits on its own, it waits and does the same.
 
     python3 run.py                          # runs: mise exec -- uv run --with-requirements requirements.txt jev_bot.py
     python3 run.py -- python jev_bot.py     # or any other command
@@ -67,7 +67,8 @@ def update():
     return git("diff", "--name-only", head, "HEAD").stdout.splitlines()
 
 
-# Run the checkout's run.py, as pulled, in this process's place: same pid, arguments and terminal
+# Run the checkout's run.py, as pulled, in this process's place: same pid, arguments and terminal. Every restart of the
+# bot goes through here, so run.py itself is always the pulled one.
 def reexec():
     os.execv(sys.executable, [sys.executable, str(HERE / "run.py"), *sys.argv[1:]])
 
@@ -97,46 +98,38 @@ def main():
 
     if update():  # start on the latest code, this script included
         reexec()
-    quick_exits = 0
-    while not presses:
-        say(f"starting: {' '.join(cmd)}")
-        started = time.monotonic()
-        bot = subprocess.Popen(cmd, cwd=HERE, start_new_session=True)
-        next_check, restarting = started + args.every, False
-        while bot.poll() is None and not presses:
-            time.sleep(1)
-            if time.monotonic() >= next_check:
-                next_check = time.monotonic() + args.every
-                if not (changed := update()):
-                    continue
-                if not needs_restart(changed):
-                    say("not restarting: only files the bot doesn't load changed")
-                    continue
+    say(f"starting: {' '.join(cmd)}")
+    started = time.monotonic()
+    bot = subprocess.Popen(cmd, cwd=HERE, start_new_session=True)
+    next_check, restarting = started + args.every, False
+    while bot.poll() is None and not presses and not restarting:
+        time.sleep(1)
+        if time.monotonic() >= next_check:
+            next_check = time.monotonic() + args.every
+            if restarting := needs_restart(changed := update()):
                 say("restarting on the new code")
                 os.kill(bot.pid, signal.SIGTERM)
-                restarting = True
-                break
-        try:
-            bot.wait(timeout=FINISH_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            say(f"bot still running after {FINISH_TIMEOUT}s — killing it")
-            os.killpg(bot.pid, signal.SIGKILL)
-            bot.wait()
-        if presses:
-            continue
-        if restarting:
-            reexec()
-        # Exited on its own: restart, backing off if it keeps dying quickly (a broken update, say)
-        quick_exits = quick_exits + 1 if time.monotonic() - started < 60 else 0
+            elif changed:
+                say("not restarting: only files the bot doesn't load changed")
+    try:
+        bot.wait(timeout=FINISH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        say(f"bot still running after {FINISH_TIMEOUT}s — killing it")
+        os.killpg(bot.pid, signal.SIGKILL)
+        bot.wait()
+    if not restarting and not presses:
+        # Exited on its own: start again, waiting longer each time it dies within a minute (a broken update, say)
+        quick_exits = int(os.environ.get("RUN_QUICK_EXITS", 0)) + 1 if time.monotonic() - started < 60 else 0
+        os.environ["RUN_QUICK_EXITS"] = str(quick_exits)  # kept across reexec()
         delay = min(5 * 2 ** quick_exits, 300)
         say(f"bot exited with {bot.returncode}; restarting in {delay}s")
         for _ in range(delay):
-            if presses:
-                break
-            time.sleep(1)
-        if not presses and update():  # a fix may have been pushed
-            reexec()
-    say("stopped")
+            if not presses:
+                time.sleep(1)
+    if presses:
+        say("stopped")
+    else:
+        reexec()
 
 
 if __name__ == "__main__":
