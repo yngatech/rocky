@@ -3,7 +3,7 @@
 Run jev and keep it up to date. Every --every seconds this fetches; when the branch's upstream has new commits that
 fast-forward onto a clean checkout, it pulls and restarts the bot. It also restarts the bot if it exits on its own.
 
-    python3 run.py                          # runs: uv run --with-requirements requirements.txt jev_bot.py
+    python3 run.py                          # runs: mise exec -- uv run --with-requirements requirements.txt jev_bot.py
     python3 run.py -- python jev_bot.py     # or any other command
 
 Restarting and Ctrl-C send the bot one SIGTERM, which it takes as a Ctrl-C, and wait for it to exit (if the bot finishes
@@ -12,13 +12,16 @@ its replies before stopping, a restart doesn't cut one off). Ctrl-C again sends 
 
 import argparse
 import os
+import shutil
 import signal
 import subprocess
 import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_CMD = ["uv", "run", "--with-requirements", "requirements.txt", "jev_bot.py"]
+# Through mise when it's installed: it installs a newly bumped pin (.python-version, mise.toml) and execs uv in place.
+DEFAULT_CMD = (["mise", "exec", "--"] if shutil.which("mise") else []) + [
+    "uv", "run", "--with-requirements", "requirements.txt", "jev_bot.py"]
 FINISH_TIMEOUT = 300    # seconds to wait for the bot to exit after asking it to stop, before killing it
 
 

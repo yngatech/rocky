@@ -11,5 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv run --python 3.14 --with-requirements requirements.txt python -m unittest
+      # Python and uv, pinned in .python-version and mise.toml.
+      - uses: jdx/mise-action@v5
+      - run: uv run --with-requirements requirements.txt python -m unittest

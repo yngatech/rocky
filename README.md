@@ -9,6 +9,14 @@ Forked from [lyramakesmusic/jevbot](https://github.com/lyramakesmusic/jevbot).
 
 ## Setup
 
+Install [mise](https://mise.jdx.dev/getting-started.html), then run:
+
+```bash
+scripts/setup.sh
+```
+
+It installs the Python pinned in `.python-version` and the uv pinned in `mise.toml`, the toolchain CI tests on, and fetches the dependencies in `requirements.txt`. In a worktree it also links `.env` and `custom_vocab.txt` from the main clone. It's safe to re-run. Without mise it warns and goes on with the uv on `PATH`, which still reads `.python-version`. Activate mise in your shell (`mise activate`) or prefix commands with `mise exec --` to use the pins.
+
 Create `.env`:
 
 ```
@@ -39,7 +47,7 @@ In the Discord developer portal, enable **Message Content Intent**. The bot need
 python3 run.py
 ```
 
-`run.py` runs the bot (`uv run --with-requirements requirements.txt jev_bot.py`; pass another command after `--`) and keeps it up to date: every minute it fetches, and when the branch's upstream has new commits that fast-forward onto a clean checkout it pulls and restarts the bot, so merging to `master` deploys. Local edits or commits are left alone. If the bot exits on its own it's restarted, backing off if it keeps dying. Ctrl-C passes on to the bot; a third Ctrl-C kills it.
+`run.py` runs the bot (`mise exec -- uv run --with-requirements requirements.txt jev_bot.py`, so it runs on the pinned toolchain and mise installs a new pin before the restart; without mise, plain `uv run`; pass another command after `--`) and keeps it up to date: every minute it fetches, and when the branch's upstream has new commits that fast-forward onto a clean checkout it pulls and restarts the bot, so merging to `master` deploys. Local edits or commits are left alone. If the bot exits on its own it's restarted, backing off if it keeps dying. Ctrl-C passes on to the bot; a third Ctrl-C kills it.
 
 Ctrl-C (or SIGTERM) to the bot lets replies in progress finish: it stops taking new messages and exits once it's done. Ctrl-C again quits without finishing. Messages sent while it's offline never reach it, so on startup it looks back `CATCH_UP_WINDOW` (30) minutes in each channel and answers the latest message to it since it last replied or reacted there, one per channel.
 
