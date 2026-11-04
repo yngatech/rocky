@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Run jev and keep it up to date. Every --every seconds this fetches; when the branch's upstream has new commits that
-fast-forward onto a clean checkout, it pulls and restarts the bot. It also restarts the bot if it exits on its own.
+fast-forward onto a clean checkout, it pulls them, and restarts the bot unless they only touch files the bot never loads
+(CI, docs, tests, dev scripts). It also restarts the bot if it exits on its own.
 
     python3 run.py                          # runs: mise exec -- uv run --with-requirements requirements.txt jev_bot.py
     python3 run.py -- python jev_bot.py     # or any other command
@@ -11,6 +12,7 @@ its replies before stopping, a restart doesn't cut one off). Ctrl-C again sends 
 """
 
 import argparse
+import fnmatch
 import os
 import shutil
 import signal
@@ -22,6 +24,9 @@ HERE = Path(__file__).resolve().parent
 # Through mise when it's installed: it installs a newly bumped pin (.python-version, mise.toml) and execs uv in place.
 DEFAULT_CMD = (["mise", "exec", "--"] if shutil.which("mise") else []) + [
     "uv", "run", "--with-requirements", "requirements.txt", "jev_bot.py"]
+# Files the running bot never loads: pulling changes to only these doesn't restart it. Anything else does.
+NO_RESTART = [".github/*", "scripts/*", "*.md", "test_*.py", "fakes.py", "jev_eval.py", "rocky_replay.py",
+              "renovate.json", ".gitignore"]
 FINISH_TIMEOUT = 300    # seconds to wait for the bot to exit after asking it to stop, before killing it
 
 
@@ -34,26 +39,30 @@ def git(*args):
                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 
-# Pull if the upstream moved and fast-forwards cleanly; True if the code changed
+def needs_restart(changed):
+    return any(not any(fnmatch.fnmatch(path, pattern) for pattern in NO_RESTART) for path in changed)
+
+
+# Pull if the upstream moved and fast-forwards cleanly; returns the files that changed, empty if nothing was pulled
 def update():
     if (fetch := git("fetch", "--quiet")).returncode:
         say(f"fetch failed: {fetch.stderr.strip()}")
-        return False
+        return []
     head, upstream = git("rev-parse", "HEAD").stdout.strip(), git("rev-parse", "@{u}").stdout.strip()
     if not upstream or head == upstream:
-        return False
+        return []
     if git("merge-base", "--is-ancestor", "HEAD", "@{u}").returncode:
         say("not updating: this checkout has commits the upstream doesn't")
-        return False
+        return []
     if git("diff", "--quiet", "HEAD").returncode:
         say("not updating: this checkout has uncommitted changes")
-        return False
+        return []
     if (merge := git("merge", "--ff-only", "--quiet", "@{u}")).returncode:
         say(f"not updating: {merge.stderr.strip()}")
-        return False
+        return []
     log = git("log", "--format=  %h %s", f"{head}..HEAD").stdout.rstrip()
     say(f"updated {head[:7]} -> {upstream[:7]}\n{log}")
-    return True
+    return git("diff", "--name-only", head, "HEAD").stdout.splitlines()
 
 
 def main():
@@ -90,11 +99,15 @@ def main():
             time.sleep(1)
             if time.monotonic() >= next_check:
                 next_check = time.monotonic() + args.every
-                if update():
-                    say("restarting on the new code")
-                    os.kill(bot.pid, signal.SIGTERM)
-                    restarting = True
-                    break
+                if not (changed := update()):
+                    continue
+                if not needs_restart(changed):
+                    say("not restarting: only files the bot doesn't load changed")
+                    continue
+                say("restarting on the new code")
+                os.kill(bot.pid, signal.SIGTERM)
+                restarting = True
+                break
         try:
             bot.wait(timeout=FINISH_TIMEOUT)
         except subprocess.TimeoutExpired:
