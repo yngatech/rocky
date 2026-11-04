@@ -14,6 +14,7 @@
 
 ## Testing
 
+- `scripts/setup.sh` sets up a clone or worktree: it installs the pinned Python and uv with mise and links `.env` and `custom_vocab.txt` in a worktree. Prefix commands with `mise exec --` if `uv --version` doesn't match `mise.toml`.
 - Tests run offline: `uv run --with-requirements requirements.txt python -m unittest`.
 - `rocky_replay.py` replays messages to Rocky on the live log, using the eval key. Run replays one at a time: each one writes the whole log to Anthropic's cache, which counts against the account's per-minute input limit.
 
