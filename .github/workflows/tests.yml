@@ -14,3 +14,11 @@ jobs:
       # Python and uv, pinned in .python-version and mise.toml.
       - uses: jdx/mise-action@v5
       - run: uv run --with-requirements requirements.txt python -m unittest
+
+  # run.py runs on the live host's system Python, not the pinned one, and can't pull a fix if a re-exec crashes it. The
+  # runner is the host's Ubuntu release, so /usr/bin/python3 is the same version. Upgrading the host? Update this too.
+  run-py-on-system-python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: /usr/bin/python3 -m unittest test_run

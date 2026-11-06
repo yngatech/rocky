@@ -3,6 +3,7 @@
 ## The live bot
 
 - `run.py` pulls `master` within a minute of a merge and restarts the bot, so merging deploys. It skips the restart when a merge only touches files the bot never loads (`NO_RESTART` in `run.py`). After a merge, check the bot came back up and that the change behaves as expected.
+- `run.py` runs on the host's system Python (Ubuntu 24.04's 3.12), not the pinned one, so it has to stay standard-library only and work on that version. CI's `run-py-on-system-python` job checks this on the same Ubuntu release: if the host's release changes, update the job's runner too.
 - In a worktree, `.env` and `custom_vocab.txt` are symlinks to the live checkout's files. Never write test data to them: they're gitignored and have no copy to restore from. Put test files in `.scratch/` or set env vars inline.
 
 ## Privacy
