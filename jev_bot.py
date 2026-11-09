@@ -1155,8 +1155,13 @@ def should_respond(m):
     if bot.user in m.mentions: return True
     if (role := bot_role(m)) and role in m.role_mentions: return True
     names = {bot.user.display_name, m.guild.me.display_name}
-    if any(name and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", m.content, re.IGNORECASE)
-           for name in names): return True
+    for name in names:
+        if not name:
+            continue
+        # Calling its name can stretch the last letter: "Rockyyyy!" still means Rocky.
+        ending = re.escape(name[-1]) + "*" if name[-1].isalpha() else ""
+        if re.search(rf"(?<!\w){re.escape(name)}{ending}(?!\w)", m.content, re.IGNORECASE):
+            return True
     return False  # replying with the author ping off doesn't ask jev to respond
 
 # channel_history is in memory, so rebuild it from Discord the first time a channel talks to jev after a restart

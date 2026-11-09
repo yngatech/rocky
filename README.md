@@ -53,7 +53,7 @@ Ctrl-C (or SIGTERM) to the bot lets replies in progress finish: it stops taking 
 
 ## Talking to it
 
-Tag the bot or its role, mention its name in plain text, or reply to one of its messages with the reply ping on. Plain names match the bot's server nickname or account display name, regardless of case, as a whole name (`rocky`, `Rocky!` and `Rocky's` count; `rockyard` doesn't). A reply with the ping off is just chatter unless it tags or names the bot. Other bots' and apps' posts are seen as chatter and never trigger a reply.
+Tag the bot or its role, mention its name in plain text, or reply to one of its messages with the reply ping on. Plain names match the bot's server nickname or account display name, regardless of case, as a whole name, allowing extra repetitions of the final letter (`rocky`, `Rocky!`, `Rocky's` and `ROCKYYYYYYY` count; `rockyard` doesn't). A reply with the ping off is just chatter unless it tags or names the bot. Other bots' and apps' posts are seen as chatter and never trigger a reply.
 
 Put `!nocontext` in a message to the bot (`@rocky !nocontext what's your favourite colour?`) and it opens a thread on that message, named from it, and answers there with none of the channel's history in view. Every message in the thread is to the bot, no tag needed, and nothing said there reaches the channel's history, Rocky's log of it, or statuses. If the message is a Discord reply, what it replies to isn't shown. Rocky's log of the thread has no memories: no `<memories>` block, no `remember` or `forget`, and its prompt says nothing said there is kept. `!nocontext` again inside the thread just carries on. In a DM, or when the thread can't be opened, it answers that message on its own, with nothing before it.
 

@@ -280,7 +280,7 @@ class MentionTests(_Discord):
     async def test_plain_names_wake_bot_and_mark_history(self):
         self.guild.me = SimpleNamespace(display_name="Garden Bot")
         for text in ("hello testbot", "TESTBOT!", "Testbot's turn", "what does Testbot think?",
-                     "Garden Bot, hello", "hi garden bot!"):
+                     "Garden Bot, hello", "hi garden bot!", "TESTBOTTTTTTT!", "hello garden bottttt"):
             for reply in (False, True):
                 with self.subTest(text=text, reply=reply):
                     m = self.message(content=text, reply=reply)
@@ -292,7 +292,8 @@ class MentionTests(_Discord):
                     self.assertEqual(entry["content"], text)
 
     async def test_name_substrings_stay_chatter(self):
-        for text in ("testbotany", "mytestbot", "testbot_2", "étestbot", "testboté"):
+        for text in ("testbotany", "mytestbot", "testbot_2", "étestbot", "testboté",
+                     "mytestbottt", "testbotttany", "testbottt_2", "testbottté", "testbo"):
             with self.subTest(text=text):
                 m = self.message(content=text, reply=False)
                 with patch.object(j, "respond", new_callable=AsyncMock) as respond:
