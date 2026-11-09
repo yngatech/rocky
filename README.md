@@ -53,7 +53,7 @@ Ctrl-C (or SIGTERM) to the bot lets replies in progress finish: it stops taking 
 
 ## Talking to it
 
-Mention the bot, or reply to one of its messages with the reply ping on. A reply with the ping off is just chatter unless it mentions the bot or its role. Other bots' and apps' posts are seen as chatter and never trigger a reply.
+Tag the bot or its role, mention its name in plain text, or reply to one of its messages with the reply ping on. Plain names match the bot's server nickname or account display name, regardless of case, as a whole name (`rocky`, `Rocky!` and `Rocky's` count; `rockyard` doesn't). A reply with the ping off is just chatter unless it tags or names the bot. Other bots' and apps' posts are seen as chatter and never trigger a reply.
 
 Put `!nocontext` in a message to the bot (`@rocky !nocontext what's your favourite colour?`) and it opens a thread on that message, named from it, and answers there with none of the channel's history in view. Every message in the thread is to the bot, no tag needed, and nothing said there reaches the channel's history, Rocky's log of it, or statuses. If the message is a Discord reply, what it replies to isn't shown. Rocky's log of the thread has no memories: no `<memories>` block, no `remember` or `forget`, and its prompt says nothing said there is kept. `!nocontext` again inside the thread just carries on. In a DM, or when the thread can't be opened, it answers that message on its own, with nothing before it.
 
@@ -79,7 +79,7 @@ These all read `logs/` (Why looks back `WHY_DAYS`, 7) and make no model requests
 `!model rocky` is Haiku as Rocky, in every channel and DM. Each channel is Rocky's own conversation, kept by `rocky_harness.py` as an append-only log in `rocky_logs/` (gitignored).
 
 - **The log**: people's messages, reactions and edits come in as user turns, written as XML with who, when and what they reply to (`<message id="12" from="pip" at="18:01" to="you" woke_you="yes">…</message>`); Rocky's turns are the assistant's. It takes everything said in the channel, and after a restart what it missed is added at the end. A channel gets a log the first time Rocky is woken there, filled from its history back to half of `LOG_TOKENS` (`FILL`) or `FILL_SCAN` (3000) messages, leaving out `!nocontext` messages and reactions to the bot's old replies.
-- **Waking**: a tag or a reply wakes it. It thinks first (low effort), then what it writes is posted as its reply. A question always gets an answer in words.
+- **Waking**: a tag, its name in plain text or a reply with the ping on wakes it. It thinks first (low effort), then what it writes is posted as its reply. A question always gets an answer in words.
 - **Tools**, called in the same response:
   - `react` puts an emoji on any message in the log: what it does instead of answering "lol", news or thanks.
   - `remember` keeps a short fact about someone, itself or a topic; `forget` drops one.
