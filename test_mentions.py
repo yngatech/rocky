@@ -277,6 +277,54 @@ class MentionTests(_Discord):
             await j.on_message(m)
         respond.assert_awaited_once_with(m)
 
+    async def test_plain_names_wake_bot_and_mark_history(self):
+        self.guild.me = SimpleNamespace(display_name="Garden Bot")
+        for text in ("hello testbot", "TESTBOT!", "Testbot's turn", "what does Testbot think?",
+                     "Garden Bot, hello", "hi garden bot!"):
+            for reply in (False, True):
+                with self.subTest(text=text, reply=reply):
+                    m = self.message(content=text, reply=reply)
+                    with patch.object(j, "respond", new_callable=AsyncMock) as respond:
+                        await j.on_message(m)
+                    respond.assert_awaited_once_with(m)
+                    entry = j.history_entry(m)
+                    self.assertTrue(entry["to_bot"])
+                    self.assertEqual(entry["content"], text)
+
+    async def test_name_substrings_stay_chatter(self):
+        for text in ("testbotany", "mytestbot", "testbot_2", "étestbot", "testboté"):
+            with self.subTest(text=text):
+                m = self.message(content=text, reply=False)
+                with patch.object(j, "respond", new_callable=AsyncMock) as respond:
+                    await j.on_message(m)
+                respond.assert_not_awaited()
+                self.assertFalse(j.history_entry(m)["to_bot"])
+
+    async def test_name_matching_treats_punctuation_literally(self):
+        self.guild.me = SimpleNamespace(display_name="Garden.Bot")
+        self.assertTrue(j.should_respond(self.message(content="hello Garden.Bot!")))
+        self.assertFalse(j.should_respond(self.message(content="hello GardenXBot!")))
+
+    async def test_plain_names_do_not_bypass_bot_or_dm_restrictions(self):
+        for options in ({"author_bot": True}, {"dm": True}):
+            with self.subTest(options=options), patch.object(j, "DM_USERS", set()):
+                m = self.message(content="hello Testbot", **options)
+                with patch.object(j, "respond", new_callable=AsyncMock) as respond:
+                    await j.on_message(m)
+                respond.assert_not_awaited()
+
+    async def test_catch_up_answers_plain_name(self):
+        m = self.message(content="hello Testbot", reply=False)
+
+        async def history(**kwargs):
+            yield m
+            yield self.target
+
+        self.channel.history.side_effect = history
+        with patch.object(j, "DM_USERS", set()), patch.object(j, "respond", new_callable=AsyncMock) as respond:
+            await j.catch_up()
+        respond.assert_awaited_once_with(m, caught_up=True)
+
     async def test_other_bots_cannot_trigger_responses(self):
         m = self.message(ping=True, author_bot=True)
         with patch.object(j, "respond", new_callable=AsyncMock) as respond:

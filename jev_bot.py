@@ -1154,6 +1154,9 @@ def should_respond(m):
     if rh.no_memories(m.channel): return True  # and in a !nocontext thread
     if bot.user in m.mentions: return True
     if (role := bot_role(m)) and role in m.role_mentions: return True
+    names = {bot.user.display_name, m.guild.me.display_name}
+    if any(name and re.search(rf"(?<!\w){re.escape(name)}(?!\w)", m.content, re.IGNORECASE)
+           for name in names): return True
     return False  # replying with the author ping off doesn't ask jev to respond
 
 # channel_history is in memory, so rebuild it from Discord the first time a channel talks to jev after a restart
