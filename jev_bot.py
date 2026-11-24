@@ -83,7 +83,8 @@ REACT_THRESHOLD = 0.4           # react when P(message is a question/request for
 STATUS_EVERY = 180              # minutes between new statuses — 0 to leave the status alone; /settings changes it
 STATUS_MIN_WORDS = 4            # a short status is just "Fine thanks" — the soup comes from making it keep going
 STATUS_MAX_WORDS = 12
-STATUS_CHAT = 8                 # recent messages from the latest active channel, in view for every other status — 0 for none
+STATUS_CHAT = 8                 # recent messages from the latest active channel, in view for every other jev status and every LLM one — 0 for none
+STATUS_RECENT = 7               # an LLM's statuses from earlier days, in view so it doesn't say the same again
 STATUS_ATTEMPTS = 3             # keep the previous status if this many candidates fail the meaning check
 STATUS_THRESHOLD = 0.6          # P(the finished status makes sense on its own), allowing jev's broken wording
 # Bare "Next word?" reads as "which word fits this?" — jev described its reply ("empty", "silent", "garbled")
@@ -747,7 +748,9 @@ How {bot} talks:
 - To get someone's attention, use @ followed by their full name as shown in the chat, ending with punctuation or a line break. Bare names just talk about them; don't mention everyone you talk about.
 - Never emoji, never says he's a bot or AI. Don't copy the lines below word for word or repeat your earlier replies."""
 
-LLM_STATUS = """Write {bot}'s new Discord custom status, as the rest of a diary entry that starts "{start}". In {bot}'s voice; a reader with no context should get a feeling, thought or question from it. One line, at most 12 words after the opener. Output the whole status, starting with "{start}"."""
+LLM_STATUS = """Write {bot}'s new Discord custom status, as the rest of a diary entry that starts "{start}". It's one thought about today, from the chat or his own day. In {bot}'s voice; a reader with no context should get a feeling, thought or question from it. One short sentence, at most 12 words after the opener. ", question?" goes only on a sentence that asks something. Output the whole status, starting with "{start}"."""
+# The same line came out word for word on different days
+LLM_STATUS_RECENT = """What {bot} posted as his status on earlier days, oldest first:\n{statuses}\n\nThe new one says something new, without copying their wording or shape.\n\n"""
 
 def rocky_prompt(bot_name, shuffle=False):
     prompt = ROCKY.format(bot=bot_name)
@@ -838,7 +841,9 @@ async def llm_message(name, messages, max_tokens=LLM_MAX_TOKENS, tools=None, rea
 async def llm_status(name, bot_name, start, chat=""):
     spec = LLMS[name]
     opener = render(start)
-    ask = (f"Recent chat in the server:\n{chat}\n\n" if chat else "") + LLM_STATUS.format(bot=bot_name, start=opener)
+    ask = ((LLM_STATUS_RECENT.format(bot=bot_name, statuses="\n".join(recent_statuses)) if recent_statuses else "")
+           + (f"Recent chat in the server:\n{chat}\n\n" if chat else "")
+           + LLM_STATUS.format(bot=bot_name, start=opener))
     note(transcript=ask, llm=name, llm_model=spec["id"], llm_chat_chars=len(chat))
     text = await llm(name, [{"role": "system", "content": rocky_prompt(bot_name, spec.get("shuffle"))},
                             {"role": "user", "content": ask}])
@@ -1423,23 +1428,27 @@ async def on_ready():
 
 # A new custom status for jev, shown in every server and on its profile. The starts take turns, and every other
 # status has recent chat in view (and its words in the vocab) — so it can say what people said, anywhere jev is.
-# 3 starts, alternating chat: each start gets a turn with and without it.
+# 3 starts, alternating chat: each start gets a turn with and without it. An LLM gets the chat every time: without
+# it, it wrote the same few things again and again.
 # The latest is kept in STATUS_PATH, so a restart shows it again instead of paying for a new one, and the next
-# comes when it's due — with the next start, not "I feel" every time.
+# comes when it's due — with the next start, not "I feel" every time. The few before it are kept there too, for an LLM
+# to see what it already said.
 # One is only made once someone has said something in a server since the last (or since jev started), so a quiet
 # night doesn't cost anything or fill STATUS_CHANNEL with statuses talking to nobody — once one is due, the next
 # message brings it. The loop checks every minute, so a new STATUS_EVERY from /settings counts straight away.
 STATUS_PATH = Path(__file__).parent / "status.json"
 status_turn = 0      # which start and chat the next status gets
 status_at = None     # when the kept one was made
+recent_statuses = [] # the last STATUS_RECENT, oldest first, the kept one last
 tried_at = None      # when the latest was made or tried for — the next is due STATUS_EVERY minutes after
 heard = False        # whether someone has spoken since then
 
 def load_status():
-    global status, status_turn, status_at, tried_at
+    global status, status_turn, status_at, tried_at, recent_statuses
     try:
         saved = json.loads(STATUS_PATH.read_text())
         status = discord.CustomActivity(name=saved["status"])
+        recent_statuses = saved.get("recent", [saved["status"]])
         status_turn, status_at = saved["turn"] + 1, datetime.fromisoformat(saved["at"])
         tried_at = status_at
         log.info(f"[STATUS] kept from {saved['at']}: {saved['status']}")
@@ -1450,7 +1459,8 @@ def load_status():
 
 def save_status(mood, turn, at):
     try:
-        STATUS_PATH.write_text(json.dumps({"status": mood, "turn": turn, "at": at}, ensure_ascii=False) + "\n")
+        STATUS_PATH.write_text(json.dumps({"status": mood, "turn": turn, "at": at, "recent": recent_statuses},
+                                          ensure_ascii=False) + "\n")
     except OSError as e:
         log.warning(f"Writing {STATUS_PATH.name} failed: {e}")
 
@@ -1459,7 +1469,7 @@ if STATUS_EVERY:
 
 @tasks.loop(minutes=1)
 async def update_status():
-    global status, status_turn, heard, tried_at
+    global status, status_turn, heard, tried_at, recent_statuses
     if not STATUS_EVERY or has_credit is False:  # off, or showing "out of credit" — every request would fail anyway
         return
     now = datetime.now(timezone.utc)
@@ -1475,12 +1485,13 @@ async def update_status():
     try:
         async with gen_lock:  # after any reply in progress, not alongside it
             n, status_turn = status_turn, status_turn + 1
-            chat = recent_chat() if n % 2 else ""
+            chat = recent_chat() if n % 2 or model_name != "jev" else ""  # an LLM has nothing else to go on
             mood = await generate_filtered_status(bot_name, STATUS_STARTS[n % len(STATUS_STARTS)], chat)
         if not mood:  # no acceptable candidate, or the API didn't answer — keep the old status
             heard = True
             return
         status = discord.CustomActivity(name=mood)
+        recent_statuses = (recent_statuses + [mood])[-STATUS_RECENT:]
         save_status(mood, n, t["at"])
         await show_credit()
         t["status"] = mood
