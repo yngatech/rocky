@@ -336,7 +336,7 @@ class TurnTests(_Case):
         self.assertEqual(j.text_of(llm.await_args.args[0][-1]["content"]).count('woke_you="yes"'), 2)
 
     async def test_a_message_answered_elsewhere_isnt_this_turns_nor_does_a_status_answer_one(self):
-        earlier = self.said("kettle", "rocky biscuit?", 0, to_bot=True)  # answered by Jev, in a log from before Rocky alone wrote
+        earlier = self.said("kettle", "rocky biscuit?", 0, to_bot=True)  # answered by Rocky outside a turn
         self.log.add("rocky", text="Biscuit good.", calls=[], id=901, elsewhere=True)
         chatter = self.said("moss", "tea anyone", 1)
         q = self.said("pip", "rocky soup?", 2, to_bot=True)
@@ -613,11 +613,11 @@ class KeepingTests(_Case):
     def test_the_first_sync_fills_in_history_before_and_later_ones_append(self):
         log = rh.log_for(self.channel())
         live = log.message("pip", "rocky hi", T0 + timedelta(minutes=5), to_bot=True, discord_id=905)
-        history = [{"role": "user", "name": "kettle", "content": "soup?", "at": T0, "id": 900, "to_bot": True,
+        history = [{"name": "kettle", "content": "soup?", "at": T0, "id": 900, "to_bot": True,
                     "reply": "Soup good.", "reply_id": 901, "reply_at": T0},
-                   {"role": "user", "name": "moss", "content": "lol", "at": T0 + timedelta(minutes=1), "id": 902,
+                   {"name": "moss", "content": "lol", "at": T0 + timedelta(minutes=1), "id": 902,
                     "to_bot": True, "reaction": "😂"},
-                   {"role": "user", "name": "pip", "content": "rocky hi", "at": live["at"], "id": 905}]
+                   {"name": "pip", "content": "rocky hi", "at": live["at"], "id": 905}]
         rh.sync(log, history)
         self.assertEqual([e["type"] for e in log.events], ["message", "rocky", "message", "rocky", "result", "message"])
         self.assertIs(log.events[-1], live)
@@ -625,8 +625,8 @@ class KeepingTests(_Case):
         # its reaction as it would have called it, the emoji itself: not "\ud83d\ude02", which Haiku didn't read as one
         self.assertEqual(log.events[3]["calls"][0]["arguments"], '{"emoji": "😂", "message": 3}')
         before = rh.render(log, "rocky")
-        rh.sync(log, history + [{"role": "user", "name": "kettle", "content": "back", "at": T0 + timedelta(minutes=9), "id": 909},
-                                {"role": "user", "name": "kettle", "content": "old", "at": T0 - timedelta(days=1), "id": 899}])
+        rh.sync(log, history + [{"name": "kettle", "content": "back", "at": T0 + timedelta(minutes=9), "id": 909},
+                                {"name": "kettle", "content": "old", "at": T0 - timedelta(days=1), "id": 899}])
         after = rh.render(log, "rocky")
         self.assertEqual([j.text_of(m.get("content")) for m in after[:len(before) - 1]],
                          [j.text_of(m.get("content")) for m in before[:-1]])

@@ -9,10 +9,6 @@ events. A <memories> block before the log is a snapshot, rebuilt — and deleted
 would be rebuilt anyway (tidy): at a jump, when the log outgrows LOG_TOKENS and its oldest half goes, or after
 CACHE_HOURS without a request.
 
-Before it, Haiku wrote Rocky's replies as a ghostwriter: the chat as one transcript, then "Write rocky's reply to pip's
-last message". That framing had it sometimes describe a reply instead of writing it ("Rocky suggests something
-concrete"), and talk about its tools. Here it doesn't write for Rocky; it is Rocky.
-
 rocky_bot hands itself over with bind() — run as a script it's __main__, so importing it here would load a second bot.
 """
 
@@ -884,7 +880,7 @@ def spoke_elsewhere(channel, text, sent):
 # after that (a restart), messages it never saw are added at the end. entries: rocky_bot's history entries, oldest
 # first. Nothing already in the log changes.
 def sync(log, entries):
-    missing = [h for h in entries if h.get("id") and str(h["id"]) not in log.ids and h.get("role") == "user"]
+    missing = [h for h in entries if h.get("id") and str(h["id"]) not in log.ids]
     seen = [e["at"] for e in log.events if e["type"] == "message"]
     if log.seeded:  # what came while it was offline, after everything it has
         missing = [h for h in missing if not seen or h["at"] > max(seen)]

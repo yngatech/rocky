@@ -24,27 +24,6 @@ class _Case(unittest.IsolatedAsyncioTestCase):
                          (j, "TIMEZONE", j.ZoneInfo("UTC")), (j, "recent_statuses", [])])  # not whatever .env sets
 
 
-class OldCommandTests(_Case):
-    def setUp(self):
-        super().setUp()
-        self.user = SimpleNamespace(id=100, bot=True, display_name="rocky")
-        patch_all(self, [(j.bot._connection, "user", self.user)])
-
-    def message(self, content):
-        return SimpleNamespace(id=600, content=content, guild=None, channel=SimpleNamespace(id=300),
-                               author=SimpleNamespace(id=500, bot=False, display_name="pip"),
-                               mentions=[], role_mentions=[], reference=None, reply=AsyncMock())
-
-    async def test_why_and_model_are_just_messages_now(self):
-        for content in ("!why", "!model jev"):
-            m = self.message(content)
-            with self.subTest(content=content), patch.object(j, "DM_USERS", {500}), \
-                    patch.object(j, "respond", new_callable=AsyncMock) as respond:
-                await j.on_message(m)
-            respond.assert_awaited_once_with(m)  # in a DM, every message is to it
-            m.reply.assert_not_awaited()
-
-
 class RequestTests(_Case):
     async def test_a_request_is_recorded_with_its_billing_and_ending(self):
         with openrouter((200, {"id": "gen-synthetic-2", "provider": "Anthropic",

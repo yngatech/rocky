@@ -373,7 +373,9 @@ def save_setting(key, value):
     apply_setting(key, value)
     saved_settings[key] = value
     try:
-        SETTINGS_PATH.write_text(json.dumps(saved_settings) + "\n")
+        tmp = SETTINGS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(saved_settings) + "\n")
+        tmp.replace(SETTINGS_PATH)
     except OSError as e:
         log.warning(f"Writing {SETTINGS_PATH.name} failed: {e}")
 
@@ -594,7 +596,7 @@ def history_entry(m):
     content = message_text(m) or ("hello" if to_bot else "")
     if not content:
         return None
-    entry = {"role": "user", "name": m.author.display_name, "content": content,
+    entry = {"name": m.author.display_name, "content": content,
              "at": m.created_at, "id": m.id, "to_bot": to_bot,
              "users": message_users(m), "roles": [r.name for r in m.role_mentions]}
     if to_bot and (r := next((r for r in m.reactions if r.me), None)):
@@ -613,7 +615,7 @@ def message_users(m, author_name=None):
 
 
 # Only names in this writer's context are eligible. Keep ambiguous and unknown names too, so a longer unresolved
-# name cannot fall back to a shorter one ("@Moss Fern" must not ping "Moss"). Older entries have no users map.
+# name cannot fall back to a shorter one ("@Moss Fern" must not ping "Moss").
 def mention_targets(entries, bot_name, reactors=False):
     people, labels = defaultdict(set), {}
 
@@ -628,10 +630,7 @@ def mention_targets(entries, bot_name, reactors=False):
     add(None, "everyone")
     add(None, "here")
     for e in entries:
-        users = e.get("users", {})
-        if e["name"] not in users.values():
-            add(None, e["name"])
-        for source in (users, e.get("reply_users", {})):
+        for source in (e.get("users", {}), e.get("reply_users", {})):
             for uid, name in source.items():
                 add(uid, name)
         for name in e.get("roles", []):
@@ -860,8 +859,10 @@ def load_status():
 
 def save_status(mood, turn, at):
     try:
-        STATUS_PATH.write_text(json.dumps({"status": mood, "turn": turn, "at": at, "recent": recent_statuses},
-                                          ensure_ascii=False) + "\n")
+        tmp = STATUS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"status": mood, "turn": turn, "at": at, "recent": recent_statuses},
+                                  ensure_ascii=False) + "\n")
+        tmp.replace(STATUS_PATH)
     except OSError as e:
         log.warning(f"Writing {STATUS_PATH.name} failed: {e}")
 
@@ -1548,7 +1549,7 @@ async def handle(m):
         log.error(f"Error: {e}", exc_info=True)
         note(error=repr(e))
         try: await post_answer(m, where, "...")
-        except: pass
+        except Exception: pass
 
 # Keeps people's reactions to the bot's replies current in the history, so Rocky can ping who reacted
 async def on_reaction_change(p, change):
