@@ -16,7 +16,7 @@ class NeedsRestart(unittest.TestCase):
         self.assertFalse(run.needs_restart([".github/workflows/tests.yml", "README.md", "test_run.py", "renovate.json"]))
 
     def test_any_file_the_bot_loads(self):
-        for path in ["jev_bot.py", "requirements.txt", ".python-version", "mise.toml", "viewer/app.js", "run.py"]:
+        for path in ["rocky_bot.py", "requirements.txt", ".python-version", "mise.toml", "viewer/app.js", "run.py"]:
             self.assertTrue(run.needs_restart(["README.md", path]), path)
 
 
@@ -29,7 +29,7 @@ class Update(unittest.TestCase):
         root = Path(tmp.name)
         self.upstream, self.clone = root / "upstream", root / "clone"
         sh(root, "git", "init", "-q", "-b", "master", str(self.upstream))
-        self.commit("jev_bot.py", "first")
+        self.commit("rocky_bot.py", "first")
         sh(root, "git", "clone", "-q", str(self.upstream), str(self.clone))
         patcher = mock.patch.object(run, "HERE", self.clone)
         patcher.start()
@@ -54,7 +54,7 @@ class Update(unittest.TestCase):
         self.assertEqual((self.clone / "README.md").read_text(), "docs")
 
     def test_a_code_change_restarts(self):
-        self.commit("jev_bot.py", "second")
+        self.commit("rocky_bot.py", "second")
         with mock.patch.object(run, "say"):
             self.assertTrue(run.needs_restart(run.update()))
 

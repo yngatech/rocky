@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Run jev and keep it up to date. Every --every seconds this fetches; when the branch's upstream has new commits that
+Run the bot and keep it up to date. Every --every seconds this fetches; when the branch's upstream has new commits that
 fast-forward onto a clean checkout, it pulls them. Unless they only touch files the bot never loads (CI, docs, tests, dev
 scripts), it stops the bot and replaces itself with the new run.py, which starts the bot on the new code: so a change to
 run.py takes effect too, with no service restart. If the bot exits on its own, it waits and does the same.
 
-    python3 run.py                          # runs: mise exec -- uv run --with-requirements requirements.txt jev_bot.py
-    python3 run.py -- python jev_bot.py     # or any other command
+    python3 run.py                          # runs: mise exec -- uv run --with-requirements requirements.txt rocky_bot.py
+    python3 run.py -- python rocky_bot.py   # or any other command
 
 Restarting and Ctrl-C send the bot one SIGTERM, which it takes as a Ctrl-C, and wait for it to exit (if the bot finishes
 its replies before stopping, a restart doesn't cut one off). Ctrl-C again sends another; a third time kills it.
@@ -25,7 +25,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # Through mise when it's installed: it installs a newly bumped pin (.python-version, mise.toml) and execs uv in place.
 DEFAULT_CMD = (["mise", "exec", "--"] if shutil.which("mise") else []) + [
-    "uv", "run", "--with-requirements", "requirements.txt", "jev_bot.py"]
+    "uv", "run", "--with-requirements", "requirements.txt", "rocky_bot.py"]
 # Files the running bot never loads: pulling changes to only these doesn't restart it. Anything else does.
 NO_RESTART = [".github/*", "scripts/*", "*.md", "test_*.py", "fakes.py", "rocky_replay.py",
               "renovate.json", ".gitignore"]

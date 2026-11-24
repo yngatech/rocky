@@ -26,7 +26,7 @@ LOG = {"channel": "bot-spam", "space": "400", "next_n": 3, "ids": {"900": 1, "90
            {"type": "message", "n": 2, "author": "kettle", "at": "2026-10-12T18:01:00+00:00", "text": "<b>hi</b>",
             "to_bot": False, "reply_to": None}]}
 
-# A turn's line as jev_bot writes it: the events' times come out as str() does them
+# A turn's line as rocky_bot writes it: the events' times come out as str() does them
 def trace(at, message_id, channel_id=300, **fields):
     return {"at": at, "channel": "bot-spam", "channel_id": channel_id, "message_id": message_id, "author": "pip",
             "message": "rocky <3 soup?", "cost": 0.0004, "llm": "rocky", "history": ["big"], "transcript": "big",

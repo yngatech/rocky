@@ -1,4 +1,4 @@
-"""What the offline tests share: jev_bot imported without real keys, and fakes for OpenRouter, Rocky's answers and
+"""What the offline tests share: rocky_bot imported without real keys, and fakes for OpenRouter, Rocky's answers and
 Rocky's state. Not a test module itself: unittest only collects test_*.py.
 """
 
@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 os.environ.setdefault("DISCORD_TOKEN_JEV", "test")
 os.environ.setdefault("OPENROUTER_API_KEY", "test")
 
-import jev_bot as j  # noqa: E402
+import rocky_bot as j  # noqa: E402
 import rocky_harness as rh  # noqa: E402
 
 

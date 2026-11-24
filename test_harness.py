@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fakes import answer, isolate_rocky, patch_all, session, traced
-import jev_bot as j
+import rocky_bot as j
 import rocky_harness as rh
 
 T0 = datetime(2026, 10, 12, 18, 0, tzinfo=timezone.utc)
@@ -566,7 +566,7 @@ class KeepingTests(_Case):
         log.message("pip", "soup?", T0, to_bot=True)
         rh.save_log(log)
         rh.logs.clear()
-        commit("jev_bot.py", "status: something about Jev (#101)")
+        commit("rocky_bot.py", "status: something about Jev (#101)")
         bar = commit("rocky_harness.py", "generate: give Rocky a bar to order drinks from (#106)")
         before = rh.render(log, "rocky")
         back = rh.log_for(self.channel())
@@ -585,7 +585,7 @@ class KeepingTests(_Case):
         date = lambda minutes: {"GIT_COMMITTER_DATE": (T0 + timedelta(minutes=minutes)).isoformat()}
         commit("rocky_harness.py", "generate: before the log began (#1)", **date(-60))
         commit("rocky_harness.py", "generate: give Rocky a note tool (#100)", **date(2))
-        commit("jev_bot.py", "status: something about Jev (#101)", **date(3))
+        commit("rocky_bot.py", "status: something about Jev (#101)", **date(3))
         bar = commit("rocky_harness.py", "generate: give Rocky a bar to order drinks from (#106)", **date(30))
         log = rh.log_for(self.channel())
         log.code = None

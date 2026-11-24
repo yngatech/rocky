@@ -30,7 +30,7 @@ ROCKY_VIEWER_PORT=8350
 - `TIMEZONE` (an IANA name, UTC if unset): the clock the times in Rocky's log and the bar's hours are on.
 - `ROCKY_VIEWER_PORT` (off if unset): serves the page of Rocky's logs on that port while the bot runs (see Rocky's logs).
 
-Optional files next to `jev_bot.py`, all gitignored. Lists are one entry per line, `#` for comments; restart the bot to pick up changes.
+Optional files next to `rocky_bot.py`, all gitignored. Lists are one entry per line, `#` for comments; restart the bot to pick up changes.
 
 - `rocky_lines.txt`: real Rocky lines, shown to the LLM as examples. A line can start with a note in brackets on what had just happened (`(a friend uses slang he doesn't know) No understand word.`), which it's told isn't his words. They're quotes from copyrighted works, so they stay out of the repo. Without it Rocky goes by the voice rules alone.
 - `rocky_body.txt`: the book's narration of what Rocky looks like and is made of, a paragraph per passage with blank lines between, so he knows drawings of himself. Shown as narration, apart from his lines.
@@ -43,7 +43,7 @@ In the Discord developer portal, enable **Message Content Intent**. The bot need
 python3 run.py
 ```
 
-`run.py` runs the bot (`mise exec -- uv run --with-requirements requirements.txt jev_bot.py`, so it runs on the pinned toolchain and mise installs a new pin before the restart; without mise, plain `uv run`; pass another command after `--`) and keeps it up to date: every minute it fetches, and when the branch's upstream has new commits that fast-forward onto a clean checkout it pulls and restarts the bot, so merging to `master` deploys. Commits that only touch files the bot never loads (CI, docs, tests, dev scripts: `NO_RESTART` in `run.py`) are pulled without a restart. To restart, it stops the bot and replaces itself with the pulled `run.py`, which starts the bot again, so changes to `run.py` take effect without restarting it by hand. Local edits or commits are left alone. If the bot exits on its own it's restarted, backing off if it keeps dying. Ctrl-C passes on to the bot; a third Ctrl-C kills it.
+`run.py` runs the bot (`mise exec -- uv run --with-requirements requirements.txt rocky_bot.py`, so it runs on the pinned toolchain and mise installs a new pin before the restart; without mise, plain `uv run`; pass another command after `--`) and keeps it up to date: every minute it fetches, and when the branch's upstream has new commits that fast-forward onto a clean checkout it pulls and restarts the bot, so merging to `master` deploys. Commits that only touch files the bot never loads (CI, docs, tests, dev scripts: `NO_RESTART` in `run.py`) are pulled without a restart. To restart, it stops the bot and replaces itself with the pulled `run.py`, which starts the bot again, so changes to `run.py` take effect without restarting it by hand. Local edits or commits are left alone. If the bot exits on its own it's restarted, backing off if it keeps dying. Ctrl-C passes on to the bot; a third Ctrl-C kills it.
 
 Ctrl-C (or SIGTERM) to the bot lets replies in progress finish: it stops taking new messages and exits once it's done. Ctrl-C again quits without finishing. Messages sent while it's offline never reach it, so on startup it looks back `CATCH_UP_WINDOW` (30) minutes in each channel and answers the latest message to it since it last replied or reacted there, one per channel.
 

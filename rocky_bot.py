@@ -41,16 +41,16 @@ JEV_MODEL = "~typesafe/jev-latest"  # Jev, the word-by-word writer before Rocky,
 HISTORY_SCAN = 400              # recent messages read to rebuild a channel's history after a restart
 TO_BOT_KEPT = 7                 # messages to the bot kept in a channel's history past HISTORY_SCAN
 FILL_SCAN = 3000                # the most messages read back to fill a channel's new Rocky log (rocky_harness.FILL)
-CATCH_UP_WINDOW = 30            # minutes — on startup, answer each channel's latest message to jev from this long ago that it missed
+CATCH_UP_WINDOW = 30            # minutes — on startup, answer each channel's latest message to the bot from this long ago that it missed
 STATUS_EVERY = 180              # minutes between new statuses — 0 to leave the status alone; /settings changes it
 STATUS_CHAT = 8                 # recent messages from the latest active channel, in view for every status — 0 for none
 STATUS_RECENT = 7               # its statuses from earlier days, in view so it doesn't say the same again
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("jev")
+log = logging.getLogger("rocky")
 rh.bind(sys.modules[__name__])  # rocky_harness reads the bot's settings and helpers through this
 
-# One JSON line per message jev handles: what it saw, what it considered, what it did and what it cost.
+# One JSON line per message the bot handles: what it saw, what it considered, what it did and what it cost.
 # Holds what people said in the server, so it stays local (gitignored) — delete old days freely.
 LOG_DIR = Path(__file__).parent / "logs"
 trace: contextvars.ContextVar[dict | None] = contextvars.ContextVar("trace", default=None)
@@ -67,7 +67,7 @@ def write_trace(t):
     except OSError as e:
         log.warning(f"Writing {LOG_DIR} failed: {e}")
 
-# History: recent messages per channel, oldest first. "to_bot" marks the ones that mentioned jev.
+# History: recent messages per channel, oldest first. "to_bot" marks the ones that mentioned the bot.
 channel_history: dict[int, list[dict]] = defaultdict(list)
 dm_channels: set[int] = set()  # channels in channel_history that are DMs, kept out of the status
 
@@ -81,7 +81,7 @@ def add_history(ch_id, entry):
     channel_history[ch_id] = kept(channel_history[ch_id] + [entry])
     return entry
 
-# An emoji as jev sees it: unicode as itself, the server's own by :name:
+# An emoji as the bot sees it: unicode as itself, the server's own by :name:
 def emoji_text(e):
     if isinstance(e, str):
         return e
@@ -389,7 +389,7 @@ bot = commands.Bot(command_prefix="!", intents=intents, status=discord.Status.id
 gen_lock = asyncio.Lock()
 
 # The diagnostic actions (below) are registered with Discord each start, so a change to them shows up. If that
-# fails, the ones registered last time stay — no reason to keep jev offline.
+# fails, the ones registered last time stay — no reason to keep the bot offline.
 async def setup_hook():
     try:
         synced = await bot.tree.sync()
@@ -400,7 +400,7 @@ async def setup_hook():
         try:
             await rocky_viewer.start(VIEWER_PORT)
             log.info(f"Rocky's logs on http://127.0.0.1:{VIEWER_PORT}")
-        except OSError as e:  # the port's taken — jev runs without it
+        except OSError as e:  # the port's taken — the bot runs without it
             log.warning(f"Serving Rocky's logs failed: {e}")
 bot.setup_hook = setup_hook
 
@@ -411,10 +411,10 @@ bot.setup_hook = setup_hook
 stopping = asyncio.Event()
 handling: set[asyncio.Task] = set()
 
-# Out of OpenRouter credit, jev shows as idle with a status saying so — otherwise it just answers "..." and nobody
+# Out of OpenRouter credit, the bot shows as idle with a status saying so — otherwise it just answers "..." and nobody
 # knows why. None until known; any request that goes through, or a check every CREDIT_CHECK_EVERY, puts it back.
 CREDIT_CHECK_EVERY = 300        # seconds
-# What jev answers with meanwhile. The .gif itself, not its klipy page — that unfurls as a "KLIPY: … View & Share" card.
+# What the bot answers with meanwhile. The .gif itself, not its klipy page — that unfurls as a "KLIPY: … View & Share" card.
 NO_MONEY = [
     "https://static2.klipy.com/ii/2711dd8a75a85be822d136ec94899b3f/6c/19/i4pB3OVh.gif",             # wallet
     "https://static2.klipy.com/ii/925f17378dd1893b674a723c07535afe/85/6c/wfANYRWk.gif",             # wallet penacony
@@ -424,7 +424,7 @@ NO_MONEY = [
     "https://static2.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/7c/91/P9M6TXIqsKJx.gif",         # we have no money
 ]
 has_credit: bool | None = None
-status: discord.CustomActivity | None = None  # update_status()'s latest, shown whenever jev has credit
+status: discord.CustomActivity | None = None  # update_status()'s latest, shown whenever the bot has credit
 credit_check: asyncio.Task | None = None
 
 async def set_credit(ok):
@@ -536,10 +536,10 @@ def attachment_tag(a):
     kind = (a.content_type or "").split("/")[0]
     return {"image": "[photo]", "video": "[video]", "audio": "[audio]"}.get(kind, "[file]")
 
-# "@jev !nocontext ..." opens a thread on the message, answered there with no history in view and none of Rocky's
-# memories (open_thread). Taken out of the text, so jev never sees it, in the message or, later, in the history.
+# "@rocky !nocontext ..." opens a thread on the message, answered there with no history in view and none of Rocky's
+# memories (open_thread). Taken out of the text, so the bot never sees it, in the message or, later, in the history.
 NO_CONTEXT = re.compile(r"(?<!\S)!nocontext(?!\S)[ \t]*", re.IGNORECASE)
-# The link back that jev's replies in side conversations (before threads) ended with is UI, never model context.
+# The link back that the bot's replies in side conversations (before threads) ended with is UI, never model context.
 SIDE_LINK = re.compile(r" \[↳(?: thread)?\]\(https://discord\.com/channels/(?:@me|\d+)/\d+/\d+\)$")
 # So are the lines under Rocky's messages saying what it did (action_lines)
 ACTION_LINES = re.compile(r"^-# (?:🍺 ordered|🧠 remembered:|🗑️ forgot:) .*$\n?", re.MULTILINE)
@@ -547,7 +547,7 @@ ACTION_LINES = re.compile(r"^-# (?:🍺 ordered|🧠 remembered:|🗑️ forgot:
 def no_context(m):  # not in a !nocontext thread, which it carries on
     return should_respond(m) and NO_CONTEXT.search(strip_mention(m)) is not None and not rh.no_memories(m.channel)
 
-# m as jev sees it: mentions as readable names, without !nocontext if it's to jev, links as tags, and a tag for each
+# m as the bot sees it: mentions as readable names, without !nocontext if it's to the bot, links as tags, and a tag for each
 # standalone embed, attachment and sticker — otherwise a post on its own is empty, dropped or read as "hello"
 def message_text(m):
     text = m.clean_content
@@ -569,7 +569,7 @@ def message_text(m):
 
 def should_respond(m):
     if m.author.bot: return False
-    if m.guild is None: return m.author.id in DM_USERS  # in a DM, every message is to jev
+    if m.guild is None: return m.author.id in DM_USERS  # in a DM, every message is to the bot
     if rh.no_memories(m.channel): return True  # and in a !nocontext thread
     if bot.user in m.mentions: return True
     if (role := bot_role(m)) and role in m.role_mentions: return True
@@ -581,12 +581,12 @@ def should_respond(m):
         ending = re.escape(name[-1]) + "*" if name[-1].isalpha() else ""
         if re.search(rf"(?<!\w){re.escape(name)}{ending}(?!\w)", m.content, re.IGNORECASE):
             return True
-    return False  # replying with the author ping off doesn't ask jev to respond
+    return False  # replying with the author ping off doesn't ask the bot to respond
 
-# channel_history is in memory, so rebuild it from Discord the first time a channel talks to jev after a restart
+# channel_history is in memory, so rebuild it from Discord the first time a channel talks to the bot after a restart
 history_loaded: dict[int, asyncio.Task] = {}
 
-# m as a history entry, or None for messages that never go in one (jev itself, and empty ones)
+# m as a history entry, or None for messages that never go in one (the bot itself, and empty ones)
 def history_entry(m):
     if m.author.id == bot.user.id:
         return None
@@ -668,7 +668,7 @@ def resolve_mentions(text, targets):
                                          users=[discord.Object(id=uid) for uid in sorted(allowed)])
 
 
-# People's reactions to a message of jev's, emoji to count — not jev's own
+# People's reactions to a message of the bot's, emoji to count — not the bot's own
 def reactions_to(m):
     return {emoji_text(r.emoji): n for r in m.reactions if (n := r.count - r.me)}
 
@@ -700,10 +700,10 @@ async def reactor_name(guild, user_id, user=None):
         return None
     return user.display_name
 
-# Who reacted to each of jev's replies, by message id: {"counts": {emoji: n}, "reactors": {emoji: {user id: name}}}.
+# Who reacted to each of the bot's replies, by message id: {"counts": {emoji: n}, "reactors": {emoji: {user id: name}}}.
 # Asking Discord for every reply's reactors made rebuilding a busy channel's history take 25s (rate limits), and the
 # reply waited for it. Kept in REACTORS_PATH (gitignored) and up to date with live reactions, so a rebuild only asks
-# about an emoji whose count has changed since — someone swapping for someone else while jev was offline goes unseen.
+# about an emoji whose count has changed since — someone swapping for someone else while the bot was offline goes unseen.
 REACTORS_PATH = Path(__file__).parent / "reactors.json"
 REACTORS_KEPT = 2000  # replies, the latest
 reactor_cache: dict[str, dict] = {}
@@ -772,7 +772,7 @@ async def attach_reactions(entry, m, prefix="reply_"):
     if not failed and (saved.get("counts") != counts or saved.get("reactors") != reactors):
         remember_reactors(m.id, counts, reactors)
 
-# Messages read from Discord, newest first, as history entries, oldest first, each with jev's reply to it, which goes
+# Messages read from Discord, newest first, as history entries, oldest first, each with the bot's reply to it, which goes
 # back under it. Not !nocontext messages, which have their own threads, or replies under one from before threads —
 # a side conversation, then, and kept apart. known: messages to leave out.
 def history_entries(scanned, known=()):
@@ -782,7 +782,7 @@ def history_entries(scanned, known=()):
             apart.add(m.id)
             continue
         if m.author.id == bot.user.id and m.reference and m.content and m.content not in NO_MONEY:
-            replies[m.reference.message_id] = m  # jev's reply, to go back under the message it answered
+            replies[m.reference.message_id] = m  # the bot's reply, to go back under the message it answered
         elif m.id not in known and (entry := history_entry(m)):
             found.append(entry)
     for entry in found:
@@ -809,7 +809,7 @@ async def load_history(first):
 @bot.event
 async def on_ready():
     global waking
-    log.info(f"jev online as {bot.user}")
+    log.info(f"Rocky online as {bot.user}")
     waking = True
     # Idle while it catches up on what it missed (~20s, slow to answer meanwhile), then online with its status — a
     # reconnect starts over without it, so the latest is put back
@@ -828,13 +828,13 @@ async def on_ready():
     if STATUS_EVERY and not update_status.is_running():
         update_status.start()
 
-# A new custom status for jev, shown in every server and on its profile. The starts take turns, and every status has
-# recent chat in view, so it can say what people said, anywhere jev is: without it, it wrote the same few things again
+# A new custom status for the bot, shown in every server and on its profile. The starts take turns, and every status has
+# recent chat in view, so it can say what people said, anywhere the bot is: without it, it wrote the same few things again
 # and again.
 # The latest is kept in STATUS_PATH, so a restart shows it again instead of paying for a new one, and the next
 # comes when it's due — with the next start, not "I feel" every time. The few before it are kept there too, for it to
 # see what it already said.
-# One is only made once someone has said something in a server since the last (or since jev started), so a quiet
+# One is only made once someone has said something in a server since the last (or since the bot started), so a quiet
 # night doesn't cost anything or fill STATUS_CHANNEL with statuses talking to nobody — once one is due, the next
 # message brings it. The loop checks every minute, so a new STATUS_EVERY from /settings counts straight away.
 STATUS_PATH = Path(__file__).parent / "status.json"
@@ -905,7 +905,7 @@ async def update_status():
         t["seconds"] = round(time.monotonic() - start, 1)
         write_trace(t)
 
-# A status is gone when the next comes, so each is also posted in STATUS_CHANNEL, to keep and react to. jev's own
+# A status is gone when the next comes, so each is also posted in STATUS_CHANNEL, to keep and react to. The bot's own
 # messages never enter the history, so a posted status isn't in the next one's recent chat. Its id is logged, so
 # Context, Stats and Diagnostics can find it. Rocky's log of the channel has it too, so asked about it there, it knows
 # it said it.
@@ -920,8 +920,8 @@ async def post_status(mood):
     except Exception as e:  # the status itself is already showing
         log.warning(f"Posting the status in {STATUS_CHANNEL} failed: {e}")
 
-# Messages sent while jev was offline (a restart, an outage) never reach on_message. On (re)connect, answer each
-# channel's latest message to jev from the last CATCH_UP_WINDOW minutes since jev last replied or reacted there —
+# Messages sent while the bot was offline (a restart, an outage) never reach on_message. On (re)connect, answer each
+# channel's latest message to the bot from the last CATCH_UP_WINDOW minutes since the bot last replied or reacted there —
 # only the latest, so a long outage doesn't bring a burst of replies to messages people have moved on from.
 async def catch_up():
     since = datetime.now(timezone.utc) - timedelta(minutes=CATCH_UP_WINDOW)
@@ -942,14 +942,14 @@ async def catch_up():
         mine = [m for m in found if m.author.id == bot.user.id]
         answered = {m.reference.message_id for m in mine if m.reference}
         handled = [m for m in found if m.id in answered or any(r.me for r in m.reactions)]
-        # Only what came after jev last replied or reacted here — anything older was left behind, not missed,
+        # Only what came after the bot last replied or reacted here — anything older was left behind, not missed,
         # and answering it would walk back one more old message on every reconnect
         last = max((m.created_at for m in mine + handled), default=since)
         # and not a !nocontext message answered in its thread
         unanswered = [m for m in found if m.created_at > last and should_respond(m)
                       and not (no_context(m) and (t := rh.thread_log(m.id)) and any(e["type"] == "rocky" for e in t.events))]
         if unanswered:
-            log.info(f"[CATCH UP] #{ch} missed {len(unanswered)} message(s) to jev, answering the latest")
+            log.info(f"[CATCH UP] #{ch} missed {len(unanswered)} message(s) to the bot, answering the latest")
             missed.append(max(unanswered, key=lambda m: m.created_at))
     for m in sorted(missed, key=lambda m: m.created_at):
         if stopping.is_set():
@@ -960,15 +960,15 @@ async def catch_up():
 async def on_message(m):
     global heard
     if m.guild is None and m.author.id not in DM_USERS:
-        return  # a DM from anyone else, or jev's own — not even kept as history
-    if m.guild and not m.author.bot:  # not jev's own posts, or each status would earn the next
+        return  # a DM from anyone else, or the bot's own — not even kept as history
+    if m.guild and not m.author.bot:  # not the bot's own posts, or each status would earn the next
         heard = True
     # Rocky's log of the channel, once it has one, takes everything said in it, but not a !nocontext message, which
     # starts a thread of its own
     if rh.has_log(m.channel.id) and not no_context(m):
         rh.observe(m)
     if not should_respond(m):
-        # Not for jev, but part of the conversation it might be asked about
+        # Not for the bot, but part of the conversation it might be asked about
         if entry := history_entry(m):
             add_history(m.channel.id, entry)
         return
@@ -1004,7 +1004,7 @@ async def on_message_edit(before, after):
 # the requests behind it (Diagnostics), from the logs. They cost nothing: no API calls.
 LOG_DAYS = 7  # how many days of logs they look back through
 
-# Whether a log entry is for something jev did in the channel: an answer there, or in STATUS_CHANNEL a status
+# Whether a log entry is for something the bot did in the channel: an answer there, or in STATUS_CHANNEL a status
 def in_channel(t, channel_id):
     if "channel_id" in t:
         return channel_id in (t["channel_id"], t.get("from_channel_id"))
@@ -1048,7 +1048,7 @@ def jev_reacted(t):
     return bool(t.get("reaction")) and not t.get("llm")
 
 
-# Context: the transcript jev had in view for one of its answers. For Rocky's turn,
+# Context: the transcript the bot had in view for one of its answers. For Rocky's turn,
 # the end of its log; for a status, what it was asked, with the recent chat. In old logs, for Jev's reply the transcript
 # it picked words from, and for its reaction the question check's, which chose reacting. An answer logged without one
 # (out of credit, say) has none to show.
@@ -1246,7 +1246,7 @@ def diagnostics_response(t):
 
 
 # Right-clicking a message for an action. Reading the logs can take longer than the 3s Discord waits for an answer, so
-# it's deferred ("jev is thinking...") first.
+# it's deferred ("Rocky is thinking...") first.
 @bot.tree.context_menu(name="Context")
 async def context_action(interaction: discord.Interaction, target: discord.Message):
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1328,7 +1328,7 @@ async def settings_command(interaction: discord.Interaction):
     await interaction.response.send_message(view=SettingsView(await is_admin(interaction.user)), ephemeral=True)
 
 
-# Messages jev has taken on, so each is answered once: at startup, catch_up() can find one on_message is already
+# Messages the bot has taken on, so each is answered once: at startup, catch_up() can find one on_message is already
 # answering (its reply not sent yet, so it looks missed), or the other way round. The latest only — catch_up() looks
 # back CATCH_UP_WINDOW minutes.
 taken: dict[int, None] = {}
@@ -1465,7 +1465,7 @@ async def post_answer(m, where, content, allowed=None):
             log.warning(f"Posting in thread {where.id} failed, replying instead: {e}")
     return await m.reply(content, mention_author=False, allowed_mentions=allowed)
 
-# A !nocontext thread's name, and its log's: the question, without the tag to jev. Rocky's log of a fallback answer
+# A !nocontext thread's name, and its log's: the question, without the tag to the bot. Rocky's log of a fallback answer
 # has it too — named "DM" or the channel's, with nothing else in it, Rocky wrote notes on what to say in 2 of 6
 # replays instead of saying it, and in none of 24 named from the question. Discord's longest is 100.
 def thread_name(m):
@@ -1490,7 +1490,7 @@ async def open_thread(m):
     return thread
 
 # A new log starts with as much of the channel as rocky_harness.FILL of it holds: history from before entries (the
-# channel's, oldest first), read back until it's that big, or FILL_SCAN messages. Not people's reactions to jev's
+# channel's, oldest first), read back until it's that big, or FILL_SCAN messages. Not people's reactions to the bot's
 # replies — a log only has what it sees from then on.
 async def earlier_history(channel, entries):
     room = rh.fill_chars() - rh.entry_chars(entries)
@@ -1550,7 +1550,7 @@ async def handle(m):
         try: await post_answer(m, where, "...")
         except: pass
 
-# Keeps people's reactions to jev's replies current in the history, so Rocky can ping who reacted
+# Keeps people's reactions to the bot's replies current in the history, so Rocky can ping who reacted
 async def on_reaction_change(p, change):
     if p.user_id == bot.user.id:
         return

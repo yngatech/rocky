@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fakes import patch_all
 import discord
-import jev_bot as j
+import rocky_bot as j
 
 
 class ExplanationTests(unittest.IsolatedAsyncioTestCase):
