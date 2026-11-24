@@ -5,7 +5,6 @@ The Discord bot: Rocky, Haiku as the Eridian engineer from Project Hail Mary, wi
 
 import io
 import os
-import math
 import re
 import json
 import time
@@ -16,11 +15,9 @@ import signal
 import sys
 import contextvars
 import copy
-import hashlib
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
-from collections import OrderedDict, defaultdict
-from dataclasses import dataclass
+from urllib.parse import urlsplit
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -29,7 +26,6 @@ import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-import why_chart
 import rocky_harness as rh
 import rocky_viewer
 
@@ -40,9 +36,7 @@ OPENROUTER_KEY = os.environ["OPENROUTER_API_KEY"]
 STATUS_CHANNEL = int(os.environ.get("STATUS_CHANNEL_ID") or 0)  # where each new status is also posted — unset for nowhere
 TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE") or "UTC")  # the clock an LLM's transcript shows times on (IANA name)
 VIEWER_PORT = int(os.environ.get("ROCKY_VIEWER_PORT") or 0)  # the page of Rocky's logs, on 127.0.0.1 — unset for none
-# Jev, the word-by-word writer before Rocky, in old logs: its model, and the token that ended a reply
-JEV_MODEL = "~typesafe/jev-latest"
-END = "<END>"
+JEV_MODEL = "~typesafe/jev-latest"  # Jev, the word-by-word writer before Rocky, in old logs
 
 HISTORY_SCAN = 400              # recent messages read to rebuild a channel's history after a restart
 TO_BOT_KEPT = 7                 # messages to the bot kept in a channel's history past HISTORY_SCAN
@@ -51,9 +45,6 @@ CATCH_UP_WINDOW = 30            # minutes — on startup, answer each channel's 
 STATUS_EVERY = 180              # minutes between new statuses — 0 to leave the status alone; /settings changes it
 STATUS_CHAT = 8                 # recent messages from the latest active channel, in view for every status — 0 for none
 STATUS_RECENT = 7               # its statuses from earlier days, in view so it doesn't say the same again
-# Words written out (render): a status's opener, and Jev's reply in old logs; and a message as one line (unrender)
-NO_SPACE_BEFORE = set(".,!?;:)\"'\n")
-NEWLINE = "\\n"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jev")
@@ -103,19 +94,9 @@ def emoji_vocabulary(guild):
     return {f":{e.name}:": e for e in guild.emojis if e.is_usable()} if guild else {}
 
 
-def render(tokens):
-    out = ""
-    for t in tokens:
-        t = "\n" if t == NEWLINE else t
-        if not out or out.endswith(("\n", " ")) or t in NO_SPACE_BEFORE:
-            out += t
-        else:
-            out += " " + t
-    return re.sub(r"(^|[.!?]\s+|\n)([a-z])", lambda m: m.group(1) + m.group(2).upper(), out.strip(" "))
-
-
+# A message as one line of a transcript
 def unrender(text):
-    return text.replace("\n", NEWLINE)
+    return text.replace("\n", "\\n")
 
 
 # How a chat completion can end without its answer: OpenRouter's content_filter, or the provider's own refusal
@@ -164,7 +145,7 @@ HEADERS = {"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "applica
 
 
 # How statuses start, taken in turn: each is the rest of a diary entry
-STATUS_STARTS = [["i", "feel"], ["i'm", "thinking", "about"], ["i", "wonder"]]
+STATUS_STARTS = ["I feel", "I'm thinking about", "I wonder"]
 
 # The last STATUS_CHAT messages people sent in the channel that heard from someone most recently, one per line
 def recent_chat():
@@ -304,9 +285,8 @@ async def llm_message(messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning
             return choice["message"]
     return None
 
-# A new status, starting with start's words, about chat — or None if the request failed
-async def llm_status(bot_name, start, chat=""):
-    opener = render(start)
+# A new status, starting with opener, about chat — or None if the request failed
+async def llm_status(bot_name, opener, chat=""):
     ask = ((LLM_STATUS_RECENT.format(bot=bot_name, statuses="\n".join(recent_statuses)) if recent_statuses else "")
            + (f"Recent chat in the server:\n{chat}\n\n" if chat else "")
            + LLM_STATUS.format(bot=bot_name, start=opener))
@@ -497,7 +477,7 @@ async def wait_for_credit():
 def bot_role(m):
     return m.guild.self_role if m.guild else None
 
-# Ignore bot mentions when parsing commands.
+# m's text without mentions of the bot, to find !nocontext in it
 def strip_mention(m):
     mention = rf"<@!?{bot.user.id}>" + (f"|{re.escape(role.mention)}" if (role := bot_role(m)) else "")
     return re.sub(mention, "", m.content).strip()
@@ -606,16 +586,9 @@ def should_respond(m):
 # channel_history is in memory, so rebuild it from Discord the first time a channel talks to jev after a restart
 history_loaded: dict[int, asyncio.Task] = {}
 
-# !why on its own in a message — the command, or None
-def command(m):
-    if m.author.bot:
-        return None
-    return "!why" if strip_mention(m).lower().split() == ["!why"] else None
-
-# m as a history entry, or None for messages that never go in one (jev itself, empty ones, and
-# commands — often a reply to jev, so after a restart one came back as a message jev never answered)
+# m as a history entry, or None for messages that never go in one (jev itself, and empty ones)
 def history_entry(m):
-    if m.author.id == bot.user.id or command(m):
+    if m.author.id == bot.user.id:
         return None
     to_bot = should_respond(m)
     content = message_text(m) or ("hello" if to_bot else "")
@@ -934,7 +907,8 @@ async def update_status():
 
 # A status is gone when the next comes, so each is also posted in STATUS_CHANNEL, to keep and react to. jev's own
 # messages never enter the history, so a posted status isn't in the next one's recent chat. Its id is logged, so
-# !why and Context can find it. Rocky's log of the channel has it too, so asked about it there, it knows it said it.
+# Context, Stats and Diagnostics can find it. Rocky's log of the channel has it too, so asked about it there, it knows
+# it said it.
 async def post_status(mood):
     if not STATUS_CHANNEL:
         return
@@ -972,7 +946,7 @@ async def catch_up():
         # and answering it would walk back one more old message on every reconnect
         last = max((m.created_at for m in mine + handled), default=since)
         # and not a !nocontext message answered in its thread
-        unanswered = [m for m in found if m.created_at > last and should_respond(m) and not command(m)
+        unanswered = [m for m in found if m.created_at > last and should_respond(m)
                       and not (no_context(m) and (t := rh.thread_log(m.id)) and any(e["type"] == "rocky" for e in t.events))]
         if unanswered:
             log.info(f"[CATCH UP] #{ch} missed {len(unanswered)} message(s) to jev, answering the latest")
@@ -993,10 +967,6 @@ async def on_message(m):
     # starts a thread of its own
     if rh.has_log(m.channel.id) and not no_context(m):
         rh.observe(m)
-    if command(m):
-        if not stopping.is_set():
-            await why(m)
-        return
     if not should_respond(m):
         # Not for jev, but part of the conversation it might be asked about
         if entry := history_entry(m):
@@ -1030,52 +1000,9 @@ async def on_message_edit(before, after):
         entry["roles"] = [r.name for r in after.role_mentions]
 
 
-# !why: what jev weighed for one of its answers, from the logs — the reply the !why is a Discord reply to (or the
-# message it reacted to), or on its own jev's latest answer in the channel: for an answer of Jev's, in old logs,
-# why_chart's chart of its words or emoji, and for Rocky's a line saying there's nothing to chart. Costs nothing: no
-# API calls.
-WHY_DAYS = 7  # how many days of logs it looks back through
-EXPLANATION_CACHE_ENTRIES = 100
-EXPLANATION_EXPIRY_MARGIN = 60  # seconds for Discord to send the embed and the client to load it
-
-@dataclass(frozen=True)
-class CachedExplanation:
-    content: str | None
-    url: str | None = None
-    filename: str | None = None
-    expires: float | None = None
-    embeds: tuple[dict, ...] = ()
-
-@dataclass(frozen=True)
-class Explanation:
-    content: str | None = None
-    embeds: tuple[discord.Embed, ...] = ()
-    files: tuple[tuple[str, bytes], ...] = ()
-
-explanation_cache: OrderedDict[tuple, CachedExplanation] = OrderedDict()
-explanation_pending: dict[tuple, asyncio.Task] = {}
-
-# The chart's font has no emoji, so a reaction's are drawn from images: Twemoji's, which Discord's are, and the
-# server's own from Discord. Kept for as long as jev runs; one that can't be fetched is shown by name instead.
-TWEMOJI = "https://cdn.jsdelivr.net/gh/jdecked/twemoji@17.0.3/assets/72x72/{}.png"
-emoji_images: dict[str, bytes] = {}
-
-def emoji_url(e, guild):
-    if e.startswith(":"):
-        custom = guild and discord.utils.get(guild.emojis, name=e.strip(":"))
-        return custom and f"https://cdn.discordapp.com/emojis/{custom.id}.png?size=64"  # .png: animated ones too
-    # Twemoji's file names: the code points, without the variation selector unless it's a sequence joined by ZWJ
-    return TWEMOJI.format("-".join(f"{ord(c):x}" for c in (e if "\u200d" in e else e.replace("\ufe0f", ""))))
-
-async def emoji_image(session, e, guild):
-    if (url := emoji_url(e, guild)) and url not in emoji_images:
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                r.raise_for_status()
-                emoji_images[url] = await r.read()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as ex:
-            log.warning(f"Fetching {e} failed: {ex.status if isinstance(ex, aiohttp.ClientResponseError) else repr(ex)}")
-    return emoji_images.get(url)
+# The actions on a message (right-click it, Apps): what the bot had in view for it (Context), what it cost (Stats) and
+# the requests behind it (Diagnostics), from the logs. They cost nothing: no API calls.
+LOG_DAYS = 7  # how many days of logs they look back through
 
 # Whether a log entry is for something jev did in the channel: an answer there, or in STATUS_CHANNEL a status
 def in_channel(t, channel_id):
@@ -1083,10 +1010,9 @@ def in_channel(t, channel_id):
         return channel_id in (t["channel_id"], t.get("from_channel_id"))
     return bool(t.get("status")) and channel_id == STATUS_CHANNEL
 
-# The latest log entry in the channel that has(), or the one for `target` if given — by default an answer or status
-# with candidates to show
-def find_trace(channel_id, target=None, has=lambda t: t.get("steps") or t.get("reaction_candidates") or t.get("llm")):
-    for path in sorted(LOG_DIR.glob("*.jsonl"), reverse=True)[:WHY_DAYS]:
+# The log entry for `target` in the channel, among those that has()
+def find_trace(channel_id, target, has):
+    for path in sorted(LOG_DIR.glob("*.jsonl"), reverse=True)[:LOG_DAYS]:
         for line in reversed(path.read_text().splitlines()):
             try:
                 t = json.loads(line)
@@ -1094,8 +1020,6 @@ def find_trace(channel_id, target=None, has=lambda t: t.get("steps") or t.get("r
                 continue
             if not in_channel(t, channel_id) or not has(t):
                 continue
-            if target is None:
-                return t
             if target.author.id == bot.user.id:
                 # Entries from before reply_id (or status_id) was logged: the text instead
                 if "status" in t:
@@ -1110,229 +1034,21 @@ def find_trace(channel_id, target=None, has=lambda t: t.get("steps") or t.get("r
                 return t
     return None
 
-# One why_chart panel per word Jev picked. Entries from before scores were logged (2026-09-24) show the probability as
-# the score. A status's words come after its start, which it was given.
-def why_panels(t):
-    words = list(next((s for s in STATUS_STARTS if t["status"].startswith(render(s))), [])) if "status" in t else []
-    panels = []
-    for s in t["steps"]:
-        rows = sorted(([w, p, rest[0] if rest else p] for w, p, *rest in s["top"]), key=lambda r: -r[2])
-        keep = rows[:8] + [r for r in rows[8:] if r[0] == s["word"]]
-        panels.append({"so_far": render(words), "picked": s["word"], "ends": s.get("ends", False),
-                       "pooled": s.get("pooled", []), "rows": keep})
-        if s["word"] != END:
-            words.append(s["word"])
-    return panels
-
-# The message a command is a Discord reply to: None if it isn't a reply, False (having said so) if it can't be seen
-async def command_target(m):
-    if not (m.reference and m.reference.message_id):
-        return None
-    target = m.reference.resolved
-    if not isinstance(target, discord.Message):  # not in discord.py's cache, or deleted
-        try:
-            target = await m.channel.fetch_message(m.reference.message_id)
-        except discord.HTTPException:
-            await m.reply("Can't see that message", mention_author=False)
-            return False
-    return target
-
-# Jev's question check, which chose between replying and reacting, and how close it came to going the other way: it
-# reacted below REACT_THRESHOLD
-REACT_THRESHOLD = 0.4
-
-def asked_note(t, bot_name):
-    if (asked := t.get("asked")) is None:
-        return None
-    side = f"reacts below {REACT_THRESHOLD:.0%}" if t.get("reaction") else f"replies from {REACT_THRESHOLD:.0%}"
-    # Rounded down, so 39.6% doesn't show as 40% on the reacting side of 40%
-    return f"Question for {bot_name}? {math.floor(asked * 100)}%, {side}"
-
-# How diagnostics answer: !why with a Discord reply to it, the actions (right-click a message, Apps) with a message
-# only whoever asked can see. They may quote what people said, so no pings from mentions.
-def reply_to(m):
-    async def send(content=None, file=None, embed=None, files=None, embeds=None):
-        options = {key: value for key, value in dict(file=file, embed=embed, files=files, embeds=embeds).items()
-                   if value is not None}
-        return await m.reply(content, **options, mention_author=False,
-                             allowed_mentions=discord.AllowedMentions.none())
-    return send
-
+# Their answer, which only whoever asked can see. It may quote what people said, so no pings from mentions.
 def answer_privately(interaction):
-    async def send(content=None, file=None, embed=None, files=None, embeds=None):
-        options = dict(file=file or discord.utils.MISSING, embed=embed or discord.utils.MISSING)
-        if files is not None:
-            options.pop("file")
-            options["files"] = files
-        if embeds is not None:
-            options.pop("embed")
-            options["embeds"] = embeds
-        return await interaction.followup.send(content or discord.utils.MISSING, **options, wait=True, ephemeral=True,
+    async def send(content=None, embed=None, files=None):
+        return await interaction.followup.send(content or discord.utils.MISSING, embed=embed or discord.utils.MISSING,
+                                               files=files or discord.utils.MISSING, wait=True, ephemeral=True,
                                                allowed_mentions=discord.AllowedMentions.none())
     return send
-
-# The chart's file name, from what it's about, so saved charts don't all overwrite why.png:
-# "why-day-good-rain-make-race.png", "why-reacted-to-lol-that-cat.png"
-def why_filename(text, reacted=False):
-    words = re.findall(r"[a-z0-9]+", text.lower())[:6]
-    return "-".join(["why"] + (["reacted", "to"] if reacted else []) + words)[:60] + ".png"
-
-# Discord's signing parameters must stay on ephemeral URLs: dropping them makes a 0×0 embed, even when the
-# image can still be downloaded. Unknown expiry isn't safe to cache; expired or deleted attachments are remade.
-def explanation_expiry(url):
-    try:
-        return int(parse_qs(urlsplit(url).query)["ex"][0], 16)
-    except (KeyError, ValueError, IndexError):
-        return 0
-
-async def explanation_attachment_available(url):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.head(url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True) as response:
-                return response.status == 200
-    except (aiohttp.ClientError, asyncio.TimeoutError):
-        return False
-
-def keep_explanation(key, response):
-    explanation_cache[key] = response
-    explanation_cache.move_to_end(key)
-    while len(explanation_cache) > EXPLANATION_CACHE_ENTRIES:
-        explanation_cache.popitem(last=False)
-
-async def send_cached_explanation(send, response):
-    if response.embeds:
-        embeds = [discord.Embed.from_dict(copy.deepcopy(data)) for data in response.embeds]
-        await send(response.content, **embed_options(embeds))
-    elif response.url is None:
-        await send(response.content)
-    else:  # a chart, uploaded before
-        await send(response.content, embed=discord.Embed().set_image(url=response.url))
-
-def embed_options(embeds):
-    return {"embed": embeds[0]} if len(embeds) == 1 else {"embeds": list(embeds)} if embeds else {}
-
-# Shared by commands and actions. Resolve the trace first: "latest" must follow new answers, edited targets must
-# still match, and deleted logs must stop being shown. Keep only short text or a signed attachment URL after
-# sending. Concurrent requests share validation, preparation and the first upload, then reuse its hosted file.
-async def send_explanation(kind, channel_id, guild, t, send):
-    bot_name = t.get("bot_name") or (guild.me if guild else bot.user).display_name
-    candidates = t.get("reaction_candidates") or []
-    urls = ()
-    if kind == "why" and candidates and not isinstance(candidates[0], str):
-        urls = tuple(emoji_url(row[0], guild) for row in candidates)
-    key = (kind, channel_id, bot_name, urls, hashlib.sha256(json.dumps(t, sort_keys=True).encode()).digest())
-    previous = explanation_pending.get(key)
-    async def deliver():
-        try:
-            cached = None
-            if previous:
-                try:
-                    cached = await asyncio.shield(previous)
-                except Exception:
-                    pass  # this caller can still deliver if the previous caller failed
-            validate = cached is None
-            cached = cached or explanation_cache.get(key)
-            if cached and cached.url:
-                if cached.expires <= time.time() + EXPLANATION_EXPIRY_MARGIN:
-                    cached = None
-                elif validate and not await explanation_attachment_available(cached.url):
-                    cached = None
-            if cached:
-                try:
-                    await send_cached_explanation(send, cached)
-                except discord.HTTPException:
-                    if cached.url is None:
-                        raise
-                else:
-                    keep_explanation(key, cached)
-                    return cached
-            explanation_cache.pop(key, None)
-            if kind == "why":
-                content, data, filename = await why_response(t, guild, bot_name)
-                response = Explanation(content, files=((filename, data),) if data is not None else ())
-            elif kind == "stats":
-                response = Explanation(embeds=(stats_response(t),))
-            else:
-                response = Explanation(embeds=(diagnostics_response(t),))
-            embeds = tuple(embed.to_dict() for embed in response.embeds)
-            cached = CachedExplanation(response.content, embeds=embeds)
-            if not response.files:
-                await send(response.content, **embed_options(response.embeds))
-            else:
-                (filename, data), = response.files
-                file = discord.File(io.BytesIO(data), filename)
-                try:
-                    sent = await send(response.content, file=file)
-                finally:
-                    file.close()
-                    file.fp.close()
-                url = next((a.url for a in getattr(sent, "attachments", ())
-                            if getattr(a, "filename", urlsplit(a.url).path.rsplit("/", 1)[-1]) == filename), None)
-                if url is None:
-                    return None  # delivered, but without a URL to reuse
-                expires = explanation_expiry(url)
-                if expires <= time.time() + EXPLANATION_EXPIRY_MARGIN:
-                    return None
-                cached = CachedExplanation(response.content, url, filename, expires)
-            keep_explanation(key, cached)
-            return cached
-        finally:
-            if explanation_pending.get(key) is asyncio.current_task():
-                explanation_pending.pop(key, None)
-
-    explanation_pending[key] = task = asyncio.create_task(deliver())
-    # A cancelled caller mustn't cancel work for others waiting on the same answer.
-    await asyncio.shield(task)
-
-async def why(m):
-    if (target := await command_target(m)) is not False:
-        await explain_why(m.channel.id, m.guild, target, reply_to(m))
-
-# !why's answer for `target` (None: the latest in the channel), through send(content=None, file=None, embed=None)
-async def explain_why(channel_id, guild, target, send):
-    t = await asyncio.to_thread(find_trace, channel_id, target)
-    if t is None:
-        await send("Nothing logged for that")
-        return
-    await send_explanation("why", channel_id, guild, t, send)
 
 # A turn Jev's reply-or-react check answered with a reaction, in old logs — Rocky reacts by itself, and may write as
 # well, so its reactions are its turn's like its messages
 def jev_reacted(t):
     return bool(t.get("reaction")) and not t.get("llm")
 
-# Prepared content, attachment bytes and filename, without any Discord objects tied to a particular send.
-async def why_response(t, guild, bot_name):
-    if t.get("llm") and t.get("reply"):
-        log.info(f"[WHY] no chart for {t['llm']}")
-        return (f"{t['llm']} doesn't say how likely its words were, so there's nothing to chart"
-                " — Context shows what it saw", None, None)
-    elif t.get("steps"):
-        said = t.get("reply") or t.get("status") or ""
-        png = await asyncio.to_thread(why_chart.render, bot_name, said, why_panels(t), note=asked_note(t, bot_name))
-        log.info(f"[WHY] chart for {t.get('reply') or t.get('status')!r}")
-        return None, png, why_filename(said)
-    elif not t.get("reaction_candidates"):  # Rocky picks its own emoji, with nothing weighed to chart
-        log.info(f"[WHY] reaction {t.get('reaction')}, by {t.get('llm')}")
-        return f"Reacted {t.get('reaction')} to \"{t['message'][:80]}\" — {t.get('llm') or 'it'} picked it itself", None, None
-    elif isinstance(t["reaction_candidates"][0], str):
-        # Entries from before their probabilities were logged: just the emoji, likeliest first
-        log.info(f"[WHY] reaction {t.get('reaction')}")
-        return (f"Reacted {t.get('reaction')} to \"{t['message'][:80]}\" — {' '.join(t['reaction_candidates'])}",
-                None, None)
-    else:
-        rows = sorted(t["reaction_candidates"], key=lambda r: -r[2])  # [emoji, probability, score], best score first
-        async with aiohttp.ClientSession() as session:
-            images = await asyncio.gather(*(emoji_image(session, e, guild) for e, _, _ in rows))
-        panel = {"so_far": t.get("author") or "", "picked": t.get("reaction"), "ends": False, "rows": rows}
-        png = await asyncio.to_thread(why_chart.render, bot_name, "", [panel], reacted_to=t["message"],
-                                      images={e: img for (e, _, _), img in zip(rows, images) if img},
-                                      note=asked_note(t, bot_name))
-        log.info(f"[WHY] chart for reaction {t.get('reaction')}")
-        return None, png, why_filename(t["message"], reacted=True)
 
-
-# Context: the transcript jev had in view for one of its answers, from the logs — found like !why's. For Rocky's turn,
+# Context: the transcript jev had in view for one of its answers. For Rocky's turn,
 # the end of its log; for a status, what it was asked, with the recent chat. In old logs, for Jev's reply the transcript
 # it picked words from, and for its reaction the question check's, which chose reacting. An answer logged without one
 # (out of credit, say) has none to show.
@@ -1345,7 +1061,7 @@ def unfence(text):
 def logged_context(t):
     return t.get("asked_transcript") if jev_reacted(t) else t.get("transcript")
 
-# The Context action's answer for `target`, through send(content=None, file=None, embed=None)
+# The Context action's answer for `target`, through send(content=None, embed=None, files=None)
 async def explain_context(channel_id, guild, target, send):
     t = await asyncio.to_thread(find_trace, channel_id, target,
                                 lambda t: (t.get("reply") or t.get("reaction") or t.get("status")) and logged_context(t))
@@ -1353,10 +1069,10 @@ async def explain_context(channel_id, guild, target, send):
         await send("Nothing logged for that")
         return
     bot_name = t.get("bot_name") or (guild.me if guild else bot.user).display_name
-    response = await asyncio.to_thread(context_response, t, bot_name)
-    files = [discord.File(io.BytesIO(data), filename) for filename, data in response.files]
+    embed, attached = context_response(t, bot_name)
+    files = [discord.File(io.BytesIO(data), filename) for filename, data in attached]
     try:
-        await send(**({"files": files} if files else {}), **embed_options(response.embeds))
+        await send(embed=embed, files=files)
     finally:
         for file in files:
             file.close()
@@ -1439,17 +1155,17 @@ def context_response(t, bot_name):
                             inline=False)
     if t.get("no_context"):
         embed.set_footer(text="!nocontext · this thread")
-    return Explanation(embeds=(embed,), files=tuple(files))
+    return embed, files
 
 
-# Stats and Diagnostics use the same logged response and never make a model request.
-async def explain_stats(channel_id, guild, target, send, *, diagnostics=False):
+# Stats and Diagnostics: from the same log entry
+async def explain_stats(channel_id, target, send, *, diagnostics=False):
     t = await asyncio.to_thread(find_trace, channel_id, target,
                                 lambda t: t.get("reply") or t.get("reaction") or t.get("status"))
     if t is None:
         await send("Nothing logged for that")
         return
-    await send_explanation("diagnostics" if diagnostics else "stats", channel_id, guild, t, send)
+    await send(embed=diagnostics_response(t) if diagnostics else stats_response(t))
 
 
 def stats_response(t):
@@ -1529,13 +1245,8 @@ def diagnostics_response(t):
     return embed
 
 
-# Right-clicking a message for a diagnostic action: that message, as if !why were a Discord reply to it.
-# Charts can take longer than the 3s Discord waits for an answer, so it's deferred ("jev is thinking...") first.
-@bot.tree.context_menu(name="Why")
-async def why_action(interaction: discord.Interaction, target: discord.Message):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    await explain_why(interaction.channel_id, interaction.guild, target, answer_privately(interaction))
-
+# Right-clicking a message for an action. Reading the logs can take longer than the 3s Discord waits for an answer, so
+# it's deferred ("jev is thinking...") first.
 @bot.tree.context_menu(name="Context")
 async def context_action(interaction: discord.Interaction, target: discord.Message):
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1544,13 +1255,13 @@ async def context_action(interaction: discord.Interaction, target: discord.Messa
 @bot.tree.context_menu(name="Stats")
 async def stats_action(interaction: discord.Interaction, target: discord.Message):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    await explain_stats(interaction.channel_id, interaction.guild, target, answer_privately(interaction))
+    await explain_stats(interaction.channel_id, target, answer_privately(interaction))
 
 
 @bot.tree.context_menu(name="Diagnostics")
 async def diagnostics_action(interaction: discord.Interaction, target: discord.Message):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    await explain_stats(interaction.channel_id, interaction.guild, target, answer_privately(interaction),
+    await explain_stats(interaction.channel_id, target, answer_privately(interaction),
                         diagnostics=True)
 
 
@@ -1809,7 +1520,7 @@ async def handle(m):
         note(no_context=True)
         if thread:
             channel_history[thread.id].append(entry)
-            # answered in the thread, so it's its; !why on the message, in the channel, finds it too
+            # answered in the thread, so it's its; an action on the message, in the channel, finds it too
             note(channel=thread.name, channel_id=thread.id, from_channel_id=m.channel.id)
     else:
         thread, where = None, m.channel

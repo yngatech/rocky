@@ -505,7 +505,7 @@ class KeepingTests(_Case):
         sent = lambda i, reply: SimpleNamespace(id=i, channel=channel, author=SimpleNamespace(id=8, display_name="pip"),
                                                 clean_content="this one ^^", created_at=T0, reference=SimpleNamespace(
                                                     message_id=reply.id, resolved=reply))
-        with patch.object(j.bot._connection, "user", user), patch.object(j, "command", lambda m: None), \
+        with patch.object(j.bot._connection, "user", user), \
                 patch.object(j, "should_respond", lambda m: True), patch.object(j, "message_text", lambda m: m.clean_content):
             rh.observe(sent(900, mine))
             rh.observe(sent(901, theirs))

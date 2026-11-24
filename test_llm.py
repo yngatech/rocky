@@ -1,4 +1,4 @@
-"""Offline behavioral checks for the LLM: its requests, statuses and !why, with the LLM's answers synthetic.
+"""Offline behavioral checks for the LLM: its requests and statuses, with the LLM's answers synthetic.
 
     uv run --with-requirements requirements.txt python -m unittest test_llm
 """
@@ -24,7 +24,7 @@ class _Case(unittest.IsolatedAsyncioTestCase):
                          (j, "TIMEZONE", j.ZoneInfo("UTC")), (j, "recent_statuses", [])])  # not whatever .env sets
 
 
-class CommandTests(_Case):
+class OldCommandTests(_Case):
     def setUp(self):
         super().setUp()
         self.user = SimpleNamespace(id=100, bot=True, display_name="rocky")
@@ -35,18 +35,14 @@ class CommandTests(_Case):
                                author=SimpleNamespace(id=500, bot=False, display_name="pip"),
                                mentions=[], role_mentions=[], reference=None, reply=AsyncMock())
 
-    def test_why_on_its_own_is_the_only_command(self):
-        for content, want in [("!why", "!why"), ("!WHY", "!why"), ("!why now", None), ("!model", None),
-                              ("!model rocky", None), ("what model are you", None)]:
-            with self.subTest(content=content):
-                self.assertEqual(j.command(self.message(content)), want)
-
-    async def test_model_is_just_a_message_now(self):
-        m = self.message("!model jev")
-        with patch.object(j, "DM_USERS", {500}), patch.object(j, "respond", new_callable=AsyncMock) as respond:
-            await j.on_message(m)
-        respond.assert_awaited_once_with(m)  # in a DM, every message is to it
-        m.reply.assert_not_awaited()
+    async def test_why_and_model_are_just_messages_now(self):
+        for content in ("!why", "!model jev"):
+            m = self.message(content)
+            with self.subTest(content=content), patch.object(j, "DM_USERS", {500}), \
+                    patch.object(j, "respond", new_callable=AsyncMock) as respond:
+                await j.on_message(m)
+            respond.assert_awaited_once_with(m)  # in a DM, every message is to it
+            m.reply.assert_not_awaited()
 
 
 class RequestTests(_Case):
@@ -157,7 +153,7 @@ class StatusTests(_Case):
                              ("Why cat knock tea, question?", "I wonder why cat knock tea, question?"),
                              ("I wonder " + "very " * 40, None)]:
             with self.subTest(answer=answer), patch.object(j, "llm_message", AsyncMock(return_value={"content": answer})):
-                mood = await j.llm_status("rocky", ["i", "wonder"], "kettle: my cat knocked my tea over")
+                mood = await j.llm_status("rocky", "I wonder", "kettle: my cat knocked my tea over")
             self.assertLessEqual(len(mood), 128)
             if want:
                 self.assertEqual(mood, want)
@@ -168,7 +164,7 @@ class StatusTests(_Case):
         for recent in ([], ["I feel rain is loud.", "I wonder why toast falls butter down, question?"]):
             with self.subTest(recent=recent), patch.object(j, "recent_statuses", recent), \
                     patch.object(j, "llm_message", AsyncMock(return_value={"content": "I'm thinking about soup."})):
-                await j.llm_status("rocky", ["i'm", "thinking", "about"], "kettle: soup tonight")
+                await j.llm_status("rocky", "I'm thinking about", "kettle: soup tonight")
             ask = self.trace["transcript"]
             self.assertEqual("earlier days" in ask, bool(recent))
             if recent:  # oldest first, before the chat the new one is about
@@ -178,25 +174,8 @@ class StatusTests(_Case):
     async def test_a_status_gets_rockys_lines_in_a_fresh_order(self):
         with patch.object(j, "rocky_prompt", return_value="voice") as prompt, \
                 patch.object(j, "llm_message", AsyncMock(return_value={"content": "I feel good."})):
-            await j.llm_status("rocky", ["i", "feel"])
+            await j.llm_status("rocky", "I feel")
         prompt.assert_called_with("rocky", shuffle=True)
-
-
-class WhyTests(_Case):
-    async def test_why_says_an_llm_reply_has_nothing_to_chart(self):
-        m = SimpleNamespace(channel=SimpleNamespace(id=300), guild=None,
-                            reply=AsyncMock(return_value=SimpleNamespace(attachments=[])), reference=None)
-        logged = {"llm": "haiku", "reply": "Biscuit", "bot_name": "rocky"}  # from before it was Rocky
-        with patch.object(j, "find_trace", return_value=logged), patch.object(j.why_chart, "render") as render:
-            await j.why(m)
-        render.assert_not_called()
-        self.assertIn("haiku doesn't say how likely its words were", m.reply.call_args.args[0])
-
-    def test_chart_files_are_named_after_what_they_show(self):
-        self.assertEqual(j.why_filename("Day good. Rain make race more interesting."), "why-day-good-rain-make-race-more.png")
-        self.assertEqual(j.why_filename("lol that cat 😂", reacted=True), "why-reacted-to-lol-that-cat.png")
-        self.assertEqual(j.why_filename("🤷"), "why.png")
-        self.assertLessEqual(len(j.why_filename("supercalifragilistic " * 6)), 64)
 
     def test_clean_takes_the_first_paragraph_without_a_name(self):
         self.assertEqual(j.clean_llm('Rocky: "No. Just no."\n\nkettle: ok', "rocky"), "No. Just no.")
