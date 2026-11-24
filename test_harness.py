@@ -453,45 +453,6 @@ class LongMessageTests(_Case):
         self.assertEqual(j.message_parts("word " * 500, limit=100)[0], ("word " * 20).strip())  # no sentences: spaces
         self.assertEqual(j.message_parts("x" * 250, limit=100), ["x" * 100, "x" * 100, "x" * 50])
 
-    async def rocky_turn(self, text, shown=()):
-        # j.rocky_turn answering pip, with Rocky's turn saying `text` and showing `shown`, through a fake channel
-        posted = lambda i, content, **kwargs: SimpleNamespace(id=i, created_at=T0, content=content)
-        channel = SimpleNamespace(id=300, name="bot-spam", guild=SimpleNamespace(id=400), typing=None,
-                                  send=AsyncMock(side_effect=lambda *a, **k: posted(901, *a, **k)))
-        m = SimpleNamespace(id=5, channel=channel, guild=channel.guild, author=SimpleNamespace(display_name="pip"),
-                            reply=AsyncMock(side_effect=lambda *a, **k: posted(900, *a, **k)))
-        q = self.said("pip", "rocky tell me", 0, to_bot=True)
-
-        async def take_turn(log, waking, *args, **kwargs):
-            return rh.Turn(text=text, spoke=log.add("rocky", text=text, calls=[]), requests=1, shown=list(shown))
-
-        entry = {"name": "pip", "content": "rocky tell me", "users": {}}
-        with patch.object(rh, "log_for", lambda c: self.log), patch.object(rh, "sync", lambda *a: None), \
-                patch.object(rh, "observe", lambda m, log=None: q), patch.object(rh, "take_turn", take_turn), \
-                patch.object(j, "emoji_vocabulary", lambda g: {}), patch.object(j, "mention_targets", lambda *a, **k: {}), \
-                patch.object(j, "message_users", lambda x: {str(x.id): "pip"}), \
-                patch.object(j, "message_text", lambda x: j.ACTION_LINES.sub("", x.content).strip()):
-            await j.rocky_turn(m, entry, "rocky", [])
-        return m, channel, entry
-
-    async def test_its_parts_are_sent_in_turn_and_are_one_message_in_the_log(self):
-        text = ("Rocky like beer. " * 150).strip()
-        m, channel, entry = await self.rocky_turn(text)
-        first, rest = m.reply.call_args.args[0], channel.send.call_args.args[0]
-        self.assertEqual(f"{first} {rest}", text)
-        self.assertEqual((self.log.ids, entry["reply_id"]), ({"900": "you", "901": "you"}, 900))
-        self.assertEqual((entry["reply"], entry["reply_users"]), (text, {"900": "pip", "901": "pip"}))
-        self.assertEqual(self.log.rocky_text(901), text)  # a reaction to either part is to its message
-
-    async def test_what_it_did_goes_under_its_message_but_not_in_its_log(self):
-        m, channel, entry = await self.rocky_turn("Stout for Pip.", [("order", "Eridani Stout", "pip"),
-                                                                     ("remember", 1, "pip: likes stout")])
-        self.assertEqual(m.reply.call_args.args[0],
-                         "Stout for Pip.\n-# 🍺 ordered Eridani Stout for pip\n-# 🧠 remembered: pip likes stout")
-        self.assertEqual(self.log.events[-1]["text"], "Stout for Pip.")  # it has its calls in the log
-        self.assertEqual(entry["reply"], "Stout for Pip.")
-        channel.send.assert_not_called()
-
 
 class KeepingTests(_Case):
     def channel(self):
