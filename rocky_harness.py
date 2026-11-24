@@ -5,9 +5,12 @@ Each channel is an append-only log of events. People's messages, reactions and e
 XML with who, when and what they reply to. Rocky's turns are the assistant's: it thinks, then its text is its message,
 and its tool calls (react, remember, forget, note, bar, order, look) are kept with their results. Nothing in the log is
 rewritten, so every request starts with the one before it and the model's prompt cache covers all but the newest
-events. A <memories> block before the log is a snapshot, rebuilt — and deleted messages blanked — only when the cache
-would be rebuilt anyway (tidy): at a jump, when the log outgrows LOG_TOKENS and its oldest half goes, or after
+events. A <memories> block before the log is a snapshot, rebuilt — and deleted messages blanked — only after a quiet
+stretch (tidy): at a jump, when the log outgrows LOG_TOKENS and its oldest half goes, at a warm-up, or after
 CACHE_HOURS without a request.
+
+A channel Rocky has taken a turn in lately has its cache kept warm: before it lapses, a request that reads the log up
+to where the last one ended resets its hour (warm), so the next turn after a quiet hour isn't read in full.
 
 rocky_bot hands itself over with bind() — run as a script it's __main__, so importing it here would load a second bot.
 """
@@ -44,6 +47,8 @@ FOLLOW_UPS = 4              # requests after one with nothing to say yet, for wh
                             # gone bar, react, bar, and at 2 ended its turn before speaking
 CACHE = {"type": "ephemeral", "ttl": "1h"}
 CACHE_HOURS = 1             # CACHE's lifetime — after this long without a request, the next is read in full anyway
+KEEP_WARM_HOURS = 25        # a channel Rocky took a turn in within this long has its cache kept warm (0 for none):
+                            # over a day, as people come back at about the same time (2 cold turns came 24h35m on)
 FACT_CHARS = 100            # a remembered fact's longest
 PICTURES = 4                # most pictures a look shows, from one message
 PICTURE_SIDE = 1024         # a picture's longest side, shrunk to it — ~1400 tokens at most, square; text in a
@@ -160,7 +165,7 @@ SHUT = ["a taumoeba leak in the cellar", "a private party", "the landlord's at a
 SHUT_DAYS = 0.15            # a day's chance it doesn't open
 SOLD_OUT = 0.4              # a day's chance a drink has run out
 
-def clock():
+def clock():  # now — the bar's, and when things happen in a log
     return datetime.now(timezone.utc)
 
 def bar_today(day):
@@ -256,9 +261,11 @@ class Log:
     ids: dict = field(default_factory=dict)
     shown: list = field(default_factory=list)  # the facts in <memories>: as they were at the last jump
     seeded: bool = False                       # filled from the channel's history, the first time it was needed
-    asked: datetime = None                     # the last request, to know when the cache has gone
+    asked: datetime = None                     # the last request, a turn's or a warm-up's, to know when the cache goes
     code: str = None                           # the last commit it was told about (updates)
     keep: bool = True                          # saved in LOG_DIR — not one for a single answer (apart)
+    bot_name: str = None                       # its name at its last turn, in the system prompt: a warm-up's is the same
+    warmed: list = field(default_factory=list) # what each warm-up since its last turn cost, for that turn's Stats
 
     def message(self, author, text, at, to_bot=False, reply_to=None, uid=None, discord_id=None, you_said=None,
                 older=None):
@@ -274,7 +281,7 @@ class Log:
 
     # after: an event to put it right after — its turn goes where its request ended, before what came meanwhile
     def add(self, type, after=None, **fields):
-        e = {"type": type, "at": fields.pop("at", None) or datetime.now(timezone.utc), **fields}
+        e = {"type": type, "at": fields.pop("at", None) or clock(), **fields}
         i = next((i + 1 for i in range(len(self.events) - 1, -1, -1) if self.events[i] is after), len(self.events))
         self.events.insert(i, e)
         return e
@@ -555,11 +562,14 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
         if e["type"] == "message" and e["to_bot"] and not e.get("gone"):
             e["woke"] = True
     waking["woke"] = True
-    now = datetime.now(timezone.utc)
+    now = clock()
     if log.asked and (now - log.asked).total_seconds() > CACHE_HOURS * 3600:
         tidy(log)  # the cache has gone, so this request is read in full anyway
-    log.asked = now
+    log.bot_name = bot_name
     token = j.trace.set({"cost": 0.0, "requests": 0}) if j.trace.get() is None else None
+    if log.warmed:  # what kept this turn's cache warm, on its Stats
+        j.note(warm_ups=len(log.warmed), warm_cost=sum(log.warmed))
+        log.warmed = []
     # Where its turn goes: what came while it was deciding comes after, has its own turn, and isn't in its follow-ups.
     # Put before, the next turn's request ended with Rocky's, and Haiku 5.5 refused it (no prefill)
     began = log.events[-1]
@@ -576,6 +586,7 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
             if message is None:
                 break
             turn.requests += 1
+            log.asked = now  # only once one went through: a request that failed refreshed no cache
             calls = [{"id": c["id"], "name": c["function"]["name"], "arguments": c["function"]["arguments"] or "{}"}
                      for c in message.get("tool_calls") or []]
             text = said(message.get("content"), bot_name)
@@ -658,6 +669,68 @@ def tidy(log):
     changed(log)
 
 
+# Keeping the cache warm. Every channel with a turn in the last KEEP_WARM_HOURS, ten minutes before an hour has passed
+# since its last request: time for rocky_bot's loop to warm one a minute, the soonest to lapse first, so ten due at
+# once all make it and none go together. One that has lapsed already (the bot was down, out of credit) is left: warming
+# it would write the whole log, as its next turn will if there is one.
+def warming(now):
+    if not KEEP_WARM_HOURS:
+        return None
+    load_warm()
+    due = []
+    for log in logs.values():
+        turned = next((e["at"] for e in reversed(log.events) if e["type"] == "rocky" and not e.get("elsewhere")), None)
+        if (log.keep and log.bot_name and log.asked and turned and now - turned < timedelta(hours=KEEP_WARM_HOURS)
+                and timedelta(minutes=50) <= now - log.asked < timedelta(hours=CACHE_HOURS)):
+            due.append(log)
+    return min(due, key=lambda log: log.asked, default=None)
+
+# After a restart, the logs that may need warming before anyone talks there: those asked within the hour
+warm_loaded = False
+
+def load_warm():
+    global warm_loaded
+    if warm_loaded:
+        return
+    warm_loaded = True
+    since = clock() - timedelta(hours=CACHE_HOURS)
+    for path in LOG_DIR.glob("*.json") if LOG_DIR.is_dir() else []:
+        try:
+            asked = json.loads(path.read_text()).get("asked")
+            if asked and datetime.fromisoformat(asked) > since:
+                log_for(SimpleNamespace(id=int(path.stem), name=None, guild=None))  # its name and space are saved
+        except (OSError, ValueError) as e:
+            j.log.warning(f"Reading {path.name} for warming failed: {e}")
+
+# A warm-up: the request its last turn made, up to where that one's cache mark was — its last people's turn before
+# Rocky's latest turn — so it reads that cache entry and resets its hour, and the next turn's request, which starts
+# with it, reads it too. Not people's events since: they're one user message that grows until Rocky's next turn, and an
+# entry written for it now would be lost when it grew, along with the one before it, which only this would have read.
+# The same system prompt, tools, thinking and memories as a turn's, through the same llm_message: a request that
+# differed would write a new entry instead. One token of output, thrown away: OpenRouter takes a max_tokens of 0 as
+# none at all, and writes a whole turn. Nothing it says is added to the log or acted on.
+# It tidies first, as a turn after a quiet hour would: a deleted message is blanked now, not kept in view as long as
+# the cache is, and <memories> brought up to date. When that changes anything, this request writes the log from
+# there — the cost a cold turn had, paid here instead, before anyone's waiting for an answer.
+# warm_request: tidied and rendered at once, while no turn is in progress — warm sends it, and a turn can start meanwhile.
+def warm_request(log):
+    tidy(log)
+    last = next((e for e in reversed(log.events) if e["type"] in ("rocky", "result") and not e.get("elsewhere")), None)
+    messages = render(log, log.bot_name, until=last)
+    while messages and messages[-1]["role"] != "user":
+        messages.pop()
+    return messages
+
+async def warm(log, messages):
+    began = clock()
+    if not messages or await j.llm_message(messages, 1, tools=tools_for(log), reasoning=REASONING) is None:
+        return False
+    log.asked = max(log.asked, began)  # a turn that started meanwhile asked later
+    log.warmed.append((j.trace.get() or {}).get("cost", 0))
+    changed(log)
+    return True
+
+
 # Live logs, one for each channel Rocky has taken a turn in, kept in LOG_DIR
 logs: dict[int, Log] = {}
 
@@ -671,7 +744,8 @@ def plain(v):
 def save_log(log):
     log_saves.pop(log.channel_id, None)
     saved = {"channel": log.channel, "space": log.space, "next_n": log.next_n, "ids": log.ids, "shown": log.shown,
-             "seeded": log.seeded, "asked": plain(log.asked), "code": log.code,
+             "seeded": log.seeded, "asked": plain(log.asked), "code": log.code, "bot_name": log.bot_name,
+             "warmed": log.warmed,
              "events": [{k: plain(v) for k, v in e.items()} for e in log.events]}
     try:
         LOG_DIR.mkdir(exist_ok=True)
@@ -712,7 +786,7 @@ def log_for(channel, memories=True):
             log.channel = saved.get("channel", log.channel)
         log.asked = saved.get("asked") and datetime.fromisoformat(saved["asked"])
         log.events = [e | {"at": datetime.fromisoformat(e["at"])} if e.get("at") else e for e in saved["events"]]
-        log.code = saved.get("code")
+        log.code, log.bot_name, log.warmed = saved.get("code"), saved.get("bot_name"), saved.get("warmed", [])
         updated(log)
     except FileNotFoundError:
         log.code = head()  # a new log starts as Rocky is now

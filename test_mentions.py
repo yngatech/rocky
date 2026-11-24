@@ -1,10 +1,12 @@
-"""Offline behavioral checks for mention routing, history, and startup catch-up.
+"""Offline behavioral checks for mention routing, history, startup catch-up, and keeping Rocky's cache warm.
 
     uv run --with-requirements requirements.txt python -m unittest test_mentions
 """
 
 import asyncio
 import contextlib
+import copy
+import json
 import tempfile
 import unittest
 from collections import defaultdict
@@ -13,10 +15,11 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from fakes import answer, isolate_rocky, patch_all, traced
+from fakes import answer, isolate_rocky, openrouter, patch_all, traced
 import discord
 import rocky_bot as j
 import rocky_harness as rh
+import rocky_viewer
 
 
 class _Message(SimpleNamespace):
@@ -672,6 +675,177 @@ class RockyHarnessTests(_Handling):
         self.assertNotIn(str(side.id), rh.logs[self.channel.id].ids)
         rh.flush()
         self.assertEqual([p.name for p in Path(rh.LOG_DIR).glob("*")], [f"{self.channel.id}.json"])  # its log isn't kept
+
+
+class KeepWarmTests(_Handling):
+    """Rocky's prompt cache kept warm while a channel is quiet: the bot's warm loop ticking each minute on a fake clock,
+    with OpenRouter and Discord faked."""
+
+    T = datetime(2026, 11, 2, 18, 0, tzinfo=timezone.utc)
+
+    def setUp(self):
+        super().setUp()
+        self.now = self.T
+        self.requests = []  # (when, the request's body)
+        self.dir = Path(self.reactors_dir.name)
+        patch_all(self, [(rh, "clock", lambda: self.now), (j, "LOG_DIR", self.dir / "logs")])
+        j.channel_history[self.channel.id][0]["at"] = self.T - timedelta(minutes=10)
+        self.channel.send = AsyncMock()
+        self.partials = {}
+        self.channel.get_partial_message = lambda i: self.partials.setdefault(i, Mock(add_reaction=AsyncMock()))
+
+    # OpenRouter: Rocky answers a turn; a warm-up (one token at most) stops at its first, having read its prompt — or,
+    # with self.held set, not until the test sets it
+    held = None
+    WARMED = {"choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "length",
+                           "native_finish_reason": "max_tokens"}],
+              "usage": {"prompt_tokens": 9000, "completion_tokens": 1, "cost": 0.0008,
+                        "prompt_tokens_details": {"cached_tokens": 8996, "cache_write_tokens": 0}}}
+
+    def api(self, body):
+        self.requests.append((self.now, copy.deepcopy(body)))
+        if body["max_tokens"] == 1 and self.held:
+            return self.held_warm_up(self.held)
+        if body["max_tokens"] == 1:
+            return 200, self.WARMED
+        return 200, {"choices": [{"message": answer("Granite. Strong, strong, strong."), "finish_reason": "stop"}],
+                     "usage": {"prompt_tokens": 9000, "completion_tokens": 20, "cost": 0.0016}}
+
+    async def held_warm_up(self, release):
+        self.holding.set()
+        await release.wait()
+        return 200, self.WARMED
+
+    def said(self, *args, **kwargs):
+        m = super().said(*args, **kwargs)
+        m.created_at = self.now
+        return m
+
+    async def minutes(self, n):  # the warm loop's ticks, a minute apart
+        for _ in range(n):
+            self.now += timedelta(minutes=1)
+            await j.keep_warm.coro()
+
+    def warm_ups(self):
+        return [(when, body) for when, body in self.requests if body["max_tokens"] == 1]
+
+    def prompt(self, body):
+        return "\n".join(j.text_of(m.get("content")) for m in body["messages"])
+
+    def same_request(self, warm, turn):  # all a cache entry depends on: OpenRouter's body but for max_tokens
+        return {k: v for k, v in warm.items() if k != "max_tokens"} == {k: v for k, v in turn.items() if k != "max_tokens"}
+
+    async def test_a_quiet_channel_is_kept_warm_for_over_a_day_after_its_last_turn(self):
+        with openrouter(self.api):
+            m = self.said("which rock is best")
+            await j.respond(m)
+            (_, turn), = self.requests
+            m.reply.assert_awaited_once()
+            self.now += timedelta(minutes=1)
+            brb = self.said("brb, dinner", name="kettle", ping=False)
+            await j.on_message(brb)  # said since: not part of a warm-up
+            log = rh.logs[self.channel.id]
+            events, facts = copy.deepcopy(log.events), copy.deepcopy(rh.memories)
+
+            # Before the hour since its turn is up, the request the turn made goes again, for one token
+            await self.minutes(48)
+            self.assertEqual(self.warm_ups(), [])
+            await self.minutes(1)
+            (when, warm), = self.warm_ups()
+            self.assertEqual(when, self.T + timedelta(minutes=50))
+            self.assertTrue(self.same_request(warm, turn))
+            self.assertNotIn("dinner", self.prompt(warm))
+            # and whatever it said is thrown away
+            m.reply.assert_awaited_once()
+            self.channel.send.assert_not_awaited()
+            self.assertEqual(self.partials, {})
+            self.assertEqual((log.events, rh.memories), (events, facts))
+
+            # A turn in progress holds the next back, and so does being out of credit, while there's time
+            async with j.gen_lock:
+                await self.minutes(50)
+            self.assertEqual(len(self.warm_ups()), 1)
+            await self.minutes(1)
+            with patch.object(j, "has_credit", False):
+                await self.minutes(50)
+            self.assertEqual(len(self.warm_ups()), 2)
+            await self.minutes(1)
+            self.assertEqual([when - self.T for when, _ in self.warm_ups()],
+                             [timedelta(minutes=50), timedelta(minutes=101), timedelta(minutes=152)])
+
+            # A message deleted is blanked at the next warm-up, not kept in view as long as the cache is
+            await j.on_raw_message_delete(SimpleNamespace(channel_id=self.channel.id, message_id=1))
+            await self.minutes(50)
+            blanked = self.warm_ups()[-1][1]
+            self.assertNotIn("toaster", self.prompt(blanked))
+            self.assertIn('<message id="1" from="kettle"', self.prompt(blanked))
+            self.assertIn('deleted="yes"/>', self.prompt(blanked))
+            await self.minutes(50)
+            self.assertTrue(self.same_request(self.warm_ups()[-1][1], blanked))
+
+            # It goes on while its last turn is within KEEP_WARM_HOURS, never an hour without a request, then stops
+            await self.minutes((self.T + timedelta(hours=rh.KEEP_WARM_HOURS + 2) - self.now) // timedelta(minutes=1))
+            times = [when for when, _ in self.requests]
+            self.assertLess(max(b - a for a, b in zip(times, times[1:])), timedelta(hours=1))
+            self.assertLess(times[-1], self.T + timedelta(hours=rh.KEEP_WARM_HOURS))
+            self.assertGreater(times[-1], self.T + timedelta(hours=rh.KEEP_WARM_HOURS - 1))
+            warmed = len(self.warm_ups())
+            self.assertEqual((m.reply.await_count, self.channel.send.await_count, self.partials), (1, 0, {}))
+
+            # Its next turn, its cache gone: deleted since is blanked first, and its Stats say what kept it warm
+            await j.on_raw_message_delete(SimpleNamespace(channel_id=self.channel.id, message_id=brb.id))
+            again = self.said("and the worst rock?")
+            await j.respond(again)
+            self.assertFalse(self.requests[-1][1]["max_tokens"] == 1)
+            self.assertNotIn("dinner", self.prompt(self.requests[-1][1]))
+
+        traces = [json.loads(line) for path in sorted((self.dir / "logs").glob("*.jsonl"))
+                  for line in path.read_text().splitlines()]
+        warm = [t for t in traces if t.get("warm")]
+        self.assertEqual(len(warm), warmed)
+        self.assertEqual({(t["channel_id"], t["cost"], t["api_calls"][0]["purpose"]) for t in warm},
+                         {(self.channel.id, 0.0008, "warm")})
+        # a warm-up isn't one of Rocky's turns on its page, nor found by an action on a message
+        self.assertEqual(len(rocky_viewer.Files(self.dir).turns()), 2)
+        latest = j.find_trace(self.channel.id, self.sent, lambda t: t.get("reply"))
+        self.assertEqual(latest["warm_ups"], warmed)
+        kept = next(f for f in j.stats_response(latest).fields if f.name == "Kept warm")
+        self.assertEqual(kept.value, f"{warmed} warm-ups since the turn before · {j.money(0.0008 * warmed)}")
+
+    async def test_after_a_restart_it_carries_on_from_what_was_saved_a_channel_at_a_time(self):
+        channels = {}
+        for name, cid in [("bot-spam", 300), ("garden", 301), ("kitchen", 302)]:
+            channel = self.channel if cid == 300 else Mock(id=cid)
+            channel.name, channel.guild, channel.typing = name, self.guild, lambda: contextlib.nullcontext()
+            channels[name] = channel
+        with openrouter(self.api):
+            self.now = self.T - timedelta(hours=2)
+            await j.respond(self.said("is basalt good", channel=channels["kitchen"]))
+            self.now = self.T
+            for name in ("bot-spam", "garden"):  # two turns at once
+                await j.respond(self.said("which rock is best", channel=channels[name]))
+            turns = {name: body for (_, body), name in zip(self.requests, ["kitchen", "bot-spam", "garden"])}
+            self.now = self.T + timedelta(minutes=30)
+            rh.flush()
+            rh.logs.clear()  # a restart, and nothing said since
+            await self.minutes(19)
+            # A slow warm-up keeps no reply waiting
+            release = asyncio.Event()
+            self.held, self.holding = release, asyncio.Event()
+            tick = asyncio.create_task(self.minutes(1))
+            await asyncio.wait_for(self.holding.wait(), 1)
+            self.held = None
+            m = self.said("is basalt still good", channel=channels["kitchen"])
+            await asyncio.wait_for(j.respond(m), 1)
+            m.reply.assert_awaited_once()
+            release.set()
+            await tick
+            await self.minutes(10)
+            warm_ups = self.warm_ups()
+        # the two due together a minute apart; kitchen, an hour past its last request when the bot came back, not at all
+        self.assertEqual([when - self.T for when, _ in warm_ups], [timedelta(minutes=50), timedelta(minutes=51)])
+        self.assertEqual(sorted(name for _, body in warm_ups for name in turns if self.same_request(body, turns[name])),
+                         ["bot-spam", "garden"])
 
 
 class OutgoingMentionTests(_Handling):
