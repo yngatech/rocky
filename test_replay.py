@@ -55,7 +55,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         llm, out = await self.run_main("--channel", str(CHANNEL), "-n", "2", "rocky soup?")
         self.assertEqual(llm.await_count, 2)
         for call in llm.await_args_list:
-            messages = call.args[1]
+            messages = call.args[0]
             self.assertIn("Amaze, amaze, amaze!", j.text_of(messages[0]["content"]))  # the live rocky_lines
             self.assertIn("He has five legs\nand five hands.\n\nNo face.", j.text_of(messages[0]["content"]))  # and rocky_body
             self.assertIn("kettle: likes soup", j.text_of(messages[1]["content"]))  # the live <memories>
@@ -72,7 +72,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_with_another_message_both_are_its_to_answer(self):
         llm, _ = await self.run_main("--channel", str(CHANNEL), "rocky soup?", "--with", "fern: rocky tea?")
-        text = j.text_of(llm.await_args.args[1][-1]["content"])
+        text = j.text_of(llm.await_args.args[0][-1]["content"])
         self.assertIn('from="fern"', text)
         self.assertEqual(text.count('woke_you="yes"'), 2)
 
@@ -82,7 +82,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_fresh_chat_ends_when_its_said(self):
         llm, _ = await self.run_main("--fresh", "--at", "2026-10-16 19:00", "rocky get us a beer")
-        text = j.text_of(llm.await_args.args[1][-1]["content"])
+        text = j.text_of(llm.await_args.args[0][-1]["content"])
         self.assertNotIn("soup tonight?", text)
         self.assertIn("anyone watching the match tonight", text)
         self.assertIn('at="19:00"', text)
@@ -94,7 +94,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         rh.Image.new("RGB", (8, 8), "red").save(image)
         for said in ("rocky look", "rocky [photo]"):
             llm, _ = await self.run_main("--fresh", "--image", str(image), said)
-            text = j.text_of(llm.await_args.args[1][-1]["content"])
+            text = j.text_of(llm.await_args.args[0][-1]["content"])
             self.assertEqual(text.count("[photo]"), 1, said)
 
 

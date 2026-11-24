@@ -1,12 +1,10 @@
-"""Offline behavioral checks for the LLM: !model, its requests, statuses and !why, with the LLM's answers synthetic.
+"""Offline behavioral checks for the LLM: its requests, statuses and !why, with the LLM's answers synthetic.
 
     uv run --with-requirements requirements.txt python -m unittest test_llm
 """
 
-import tempfile
 import unittest
 from collections import defaultdict
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -14,17 +12,19 @@ from fakes import openrouter, patch_all, session, traced
 import jev_bot as j
 
 
+# What the LLM said to messages
+async def said(messages):
+    return ((await j.llm_message(messages)) or {}).get("content") or ""
+
+
 class _Case(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.dir.cleanup)
         self.trace = traced(self)
-        patch_all(self, [(j, "MODEL_PATH", Path(self.dir.name) / "model.json"), (j, "model_name", "jev"),
-                         (j, "has_credit", True), (j, "channel_history", defaultdict(list)),
+        patch_all(self, [(j, "has_credit", True), (j, "channel_history", defaultdict(list)),
                          (j, "TIMEZONE", j.ZoneInfo("UTC")), (j, "recent_statuses", [])])  # not whatever .env sets
 
 
-class ModelCommandTests(_Case):
+class CommandTests(_Case):
     def setUp(self):
         super().setUp()
         self.user = SimpleNamespace(id=100, bot=True, display_name="rocky")
@@ -35,79 +35,46 @@ class ModelCommandTests(_Case):
                                author=SimpleNamespace(id=500, bot=False, display_name="pip"),
                                mentions=[], role_mentions=[], reference=None, reply=AsyncMock())
 
-    def test_command_takes_model_with_or_without_a_name(self):
-        for content, want in [("!model", "!model"), ("!model rocky", "!model"), ("!MODEL Rocky", "!model"),
-                              ("!model rocky please", None), ("!why", "!why"), ("!why now", None),
-                              ("what model are you", None)]:
+    def test_why_on_its_own_is_the_only_command(self):
+        for content, want in [("!why", "!why"), ("!WHY", "!why"), ("!why now", None), ("!model", None),
+                              ("!model rocky", None), ("what model are you", None)]:
             with self.subTest(content=content):
                 self.assertEqual(j.command(self.message(content)), want)
 
-    async def test_on_message_routes_model_without_answering(self):
-        m = self.message("!model rocky")
-        with patch.object(j, "DM_USERS", {500}), patch.object(j, "model_command", new_callable=AsyncMock) as cmd, \
-                patch.object(j, "respond", new_callable=AsyncMock) as respond:
+    async def test_model_is_just_a_message_now(self):
+        m = self.message("!model jev")
+        with patch.object(j, "DM_USERS", {500}), patch.object(j, "respond", new_callable=AsyncMock) as respond:
             await j.on_message(m)
-        cmd.assert_awaited_once_with(m)
-        respond.assert_not_awaited()
-
-    async def test_switching_is_kept_and_unknown_names_change_nothing(self):
-        m = self.message("!model rocky")
-        await j.model_command(m)
-        self.assertEqual(j.model_name, "rocky")
-        self.assertEqual(j.load_model(), "rocky")  # what a restart would pick up
-        self.assertIn("Now writing with **rocky** (anthropic/claude-haiku-5.5)", m.reply.call_args.args[0])
-
-        m = self.message("!model gpt9")
-        await j.model_command(m)
-        self.assertEqual(j.model_name, "rocky")
-        self.assertIn("No model called 'gpt9'", m.reply.call_args.args[0])
-
-        m = self.message("!model haiku")  # gone: Haiku is Rocky now
-        await j.model_command(m)
-        self.assertEqual(j.model_name, "rocky")
-
-        m = self.message("!model")
-        await j.model_command(m)
-        self.assertIn("Writing with **rocky**", m.reply.call_args.args[0])
-
-    def test_unknown_or_unreadable_saved_model_falls_back_to_jev(self):
-        for saved in ['{"model": "gpt9"}', '{"model": "haiku"}', "not json"]:
-            with self.subTest(saved=saved):
-                j.MODEL_PATH.write_text(saved)
-                self.assertEqual(j.load_model(), "jev")
+        respond.assert_awaited_once_with(m)  # in a DM, every message is to it
+        m.reply.assert_not_awaited()
 
 
 class RequestTests(_Case):
-    async def test_a_jev_decision_and_an_llm_request_are_recorded_separately(self):
-        with openrouter((200, {"answers": {"asked": {"noul": .9}}, "usage": {"cost": .000081}}),
-                        (200, {"id": "gen-synthetic-2", "provider": "Anthropic",
+    async def test_a_request_is_recorded_with_its_billing_and_ending(self):
+        with openrouter((200, {"id": "gen-synthetic-2", "provider": "Anthropic",
                                "choices": [{"message": {"content": "Coffee first. Then walk."}, "finish_reason": "stop",
                                             "native_finish_reason": "stop"}],
                                "usage": {"cost": 0, "is_byok": True,
                                          "cost_details": {"upstream_inference_cost": .000577}}})), \
                 patch.object(j.log, "warning") as warning:
-            self.assertIsNone(await j.choose_reaction("coffee?", "Moss", "Rocky", ["☕"]))
-            reply = await j.llm("rocky", [{"role": "user", "content": "coffee?"}])
+            reply = await said([{"role": "user", "content": "coffee?"}])
         self.assertEqual(reply, "Coffee first. Then walk.")
-        decision, call = self.trace["api_calls"]
-        self.assertEqual([r["purpose"] for r in (decision, call)], ["decision", "reply"])
-        self.assertEqual([r["is_byok"] for r in (decision, call)], [False, True])
-        self.assertEqual(call["model"], j.LLMS["rocky"]["id"])
-        # What each cost, and only the reply's on our own Anthropic key
-        self.assertEqual([round(r["router_cost"] + r["key_cost"], 6) for r in (decision, call)], [.000081, .000577])
+        call, = self.trace["api_calls"]
+        self.assertEqual((call["purpose"], call["model"], call["is_byok"]), ("reply", j.LLM_MODEL, True))
+        # paid on our own Anthropic key
+        self.assertEqual(round(call["router_cost"] + call["key_cost"], 6), .000577)
         self.assertAlmostEqual(self.trace["byok_cost"], .000577)
-        self.assertNotIn("finish_reason", decision)  # Jev's decisions don't have one
         self.assertEqual((call["finish_reason"], call["provider"], call["id"]), ("stop", "Anthropic", "gen-synthetic-2"))
         self.assertIsNone(j.stopped_early(call))  # an ordinary ending, without a warning
         warning.assert_not_called()
-        self.assertEqual(self.trace["requests"], 2)
-        self.assertAlmostEqual(self.trace["cost"], .000658)
+        self.assertEqual(self.trace["requests"], 1)
+        self.assertAlmostEqual(self.trace["cost"], .000577)
 
     async def test_a_request_logs_the_prompt_size_for_context(self):
         with openrouter((200, {"choices": [{"message": {"content": "Is Biscuit."}}],
                                "usage": {"prompt_tokens": 3_100, "completion_tokens": 18, "cost": 0.001,
                                          "prompt_tokens_details": {"cached_tokens": 2_900}}})) as s:
-            await j.llm("rocky", [{"role": "system", "content": "voice"}, {"role": "user", "content": "cat?"}])
+            await said([{"role": "system", "content": "voice"}, {"role": "user", "content": "cat?"}])
         messages = s.post.call_args.kwargs["json"]["messages"]
         self.assertEqual(self.trace["llm_window"], 1_000_000)
         self.assertEqual(self.trace["llm_prompt_tokens"], 3_100)
@@ -119,7 +86,7 @@ class RequestTests(_Case):
         limited = (429, {"error": {"code": 429}})
         with openrouter(limited, limited, (200, {"choices": [{"message": {"content": "Is Biscuit."}}],
                                                  "usage": {"prompt_tokens": 10}})):
-            text = await j.llm("rocky", [{"role": "user", "content": "cat?"}])
+            text = await said([{"role": "user", "content": "cat?"}])
         self.assertEqual(text, "Is Biscuit.")
         self.assertEqual([r["status"] for r in self.trace["api_calls"]], [429, 429, 200])
         self.assertEqual([r["attempt"] for r in self.trace["api_calls"]], [0, 1, 2])
@@ -131,7 +98,7 @@ class RequestTests(_Case):
                                "choices": [{"message": {"content": "Secret refusal words."},
                                             "finish_reason": "content_filter", "native_finish_reason": "refusal"}],
                                "usage": {"cost": .0001}})), self.assertLogs(j.log, "WARNING") as logs:
-            await j.llm("rocky", [{"role": "user", "content": "cat?"}])
+            await said([{"role": "user", "content": "cat?"}])
         failed, refused = self.trace["api_calls"]  # nothing on why the failure stopped: it had no answer
         self.assertEqual({k: failed[k] for k in ["finish_reason", "native_finish_reason", "id", "provider"]},
                          dict.fromkeys(["finish_reason", "native_finish_reason", "id", "provider"]))
@@ -146,21 +113,9 @@ class RequestTests(_Case):
     async def test_an_odd_response_is_still_retried(self):
         with openrouter((502, {"choices": [None]}), (200, ["not", "a", "completion"]),
                         (200, {"choices": [{"message": {"content": "Is Biscuit."}, "finish_reason": "stop"}], "usage": {}})):
-            reply = await j.llm("rocky", [{"role": "user", "content": "cat?"}])
+            reply = await said([{"role": "user", "content": "cat?"}])
         self.assertEqual(reply, "Is Biscuit.")
         self.assertEqual([r["finish_reason"] for r in self.trace["api_calls"]], [None, None, "stop"])
-
-    async def test_jev_transcript_has_no_times(self):
-        history = [{"role": "user", "name": "pip", "content": "hi", "at": j.datetime.now(j.timezone.utc)}]
-        with patch.object(j, "loom", new_callable=AsyncMock, return_value=["Hi"]):
-            await j.generate_reply("cat?", "kettle", "rocky", history=history)
-        self.assertEqual(self.trace["transcript"], "pip: hi\nkettle: cat?\nrocky: ")
-
-    async def test_jev_still_looms(self):
-        with patch.object(j, "llm", new_callable=AsyncMock) as llm, \
-                patch.object(j, "loom", new_callable=AsyncMock, return_value=["Biscuit"]):
-            self.assertEqual(await j.generate_reply("cat?", "kettle", "rocky", history=[]), "Biscuit")
-        llm.assert_not_awaited()
 
 class CreditTests(_Case):
     """A request OpenRouter won't pay for: out of credit, or over the key's limit or its workspace's budget."""
@@ -171,20 +126,16 @@ class CreditTests(_Case):
     async def test_a_spent_budget_or_credit_stops_without_retrying(self):
         for status, body in [(403, self.BUDGET), (402, {"error": {"code": 402, "message": "Insufficient credits"}}),
                              (402, "not json")]:
-            for call in ("llm", "post"):
-                with self.subTest(status=status, body=body, call=call):
-                    with openrouter((status, body)) as s:
-                        if call == "llm":
-                            self.assertEqual(await j.llm("rocky", [{"role": "user", "content": "cat?"}]), "")
-                        else:
-                            self.assertEqual(await j.post(s, "state", {"asked": {}}), {})
-                    self.assertEqual(s.post.call_count, 1)
-                    s.set_credit.assert_awaited_once_with(False)
+            with self.subTest(status=status, body=body):
+                with openrouter((status, body)) as s:
+                    self.assertEqual(await said([{"role": "user", "content": "cat?"}]), "")
+                self.assertEqual(s.post.call_count, 1)
+                s.set_credit.assert_awaited_once_with(False)
 
     async def test_any_other_forbidden_is_retried(self):
         body = {"error": {"code": 403, "message": "Flagged", "metadata": {"reasons": ["synthetic"]}}}
         with openrouter((403, body)) as s:
-            await j.llm("rocky", [{"role": "user", "content": "cat?"}])
+            await said([{"role": "user", "content": "cat?"}])
         self.assertEqual(s.post.call_count, 3)
         s.set_credit.assert_not_awaited()
 
@@ -201,33 +152,12 @@ class CreditTests(_Case):
 
 
 class StatusTests(_Case):
-    async def test_rejected_status_preserves_all_request_purposes_and_accepted_context(self):
-        j.model_name = "rocky"
-        replies = [(200, data) for size, score in [(2_000, .1), (3_000, .9)] for data in [
-            {"choices": [{"message": {"content": "I feel coffee is good."}}],
-             "usage": {"prompt_tokens": size, "completion_tokens": 18, "cost": 0, "is_byok": True,
-                       "prompt_tokens_details": {"cached_tokens": size - 500},
-                       "cost_details": {"upstream_inference_cost": .0004}}},
-            {"answers": {"acceptable": {"noul": score}}, "usage": {"cost": .00004}}]]
-        with openrouter(*replies):
-            mood = await j.generate_filtered_status("Rocky", ["i", "feel"], "Moss: coffee")
-        self.assertEqual(mood, "I feel coffee is good.")
-        self.assertEqual([r["purpose"] for r in self.trace["api_calls"]],
-                         ["status", "status_check", "status", "status_check"])
-        # the accepted one's usage, and the cost of all of them
-        self.assertEqual((self.trace["llm_prompt_tokens"], self.trace["llm_chat_chars"]), (3_000, len("Moss: coffee")))
-        self.assertEqual((self.trace["llm_cached_tokens"], self.trace["llm_completion_tokens"]), (2_500, 18))
-        self.assertEqual(self.trace["requests"], 4)
-        self.assertAlmostEqual(self.trace["cost"], .00088)
-        self.assertAlmostEqual(self.trace["byok_cost"], .0008)
-
     async def test_status_keeps_its_opener_on_one_line(self):
-        j.model_name = "rocky"
         for answer, want in [("I wonder if sleep is same\nwhen no one watches.", "I wonder if sleep is same when no one watches."),
                              ("Why cat knock tea, question?", "I wonder why cat knock tea, question?"),
                              ("I wonder " + "very " * 40, None)]:
-            with self.subTest(answer=answer), patch.object(j, "llm", AsyncMock(return_value=answer)):
-                mood = await j.generate_status("rocky", ["i", "wonder"], "kettle: my cat knocked my tea over")
+            with self.subTest(answer=answer), patch.object(j, "llm_message", AsyncMock(return_value={"content": answer})):
+                mood = await j.llm_status("rocky", ["i", "wonder"], "kettle: my cat knocked my tea over")
             self.assertLessEqual(len(mood), 128)
             if want:
                 self.assertEqual(mood, want)
@@ -235,11 +165,10 @@ class StatusTests(_Case):
         self.assertEqual(self.trace["llm"], "rocky")
 
     async def test_a_status_sees_what_it_posted_on_earlier_days(self):
-        j.model_name = "rocky"
         for recent in ([], ["I feel rain is loud.", "I wonder why toast falls butter down, question?"]):
             with self.subTest(recent=recent), patch.object(j, "recent_statuses", recent), \
-                    patch.object(j, "llm", AsyncMock(return_value="I'm thinking about soup.")):
-                await j.generate_status("rocky", ["i'm", "thinking", "about"], "kettle: soup tonight")
+                    patch.object(j, "llm_message", AsyncMock(return_value={"content": "I'm thinking about soup."})):
+                await j.llm_status("rocky", ["i'm", "thinking", "about"], "kettle: soup tonight")
             ask = self.trace["transcript"]
             self.assertEqual("earlier days" in ask, bool(recent))
             if recent:  # oldest first, before the chat the new one is about
@@ -247,11 +176,10 @@ class StatusTests(_Case):
                 self.assertLess(ask.index(recent[1]), ask.index("kettle: soup tonight"))
 
     async def test_a_status_gets_rockys_lines_in_a_fresh_order(self):
-        j.model_name = "rocky"
         with patch.object(j, "rocky_prompt", return_value="voice") as prompt, \
-                patch.object(j, "llm", AsyncMock(return_value="I feel good.")):
-            await j.generate_status("rocky", ["i", "feel"])
-        prompt.assert_called_with("rocky", True)
+                patch.object(j, "llm_message", AsyncMock(return_value={"content": "I feel good."})):
+            await j.llm_status("rocky", ["i", "feel"])
+        prompt.assert_called_with("rocky", shuffle=True)
 
 
 class WhyTests(_Case):

@@ -4,18 +4,18 @@
 
 - `run.py` pulls `master` within a minute of a merge and restarts the bot, so merging deploys. It skips the restart when a merge only touches files the bot never loads (`NO_RESTART` in `run.py`). After a merge, check the bot came back up and that the change behaves as expected.
 - `run.py` runs on the host's system Python (Ubuntu 24.04's 3.12), not the pinned one, so it has to stay standard-library only and work on that version. CI's `run-py-on-system-python` job checks this on the same Ubuntu release: if the host's release changes, update the job's runner too.
-- In a worktree, `.env` and `custom_vocab.txt` are symlinks to the live checkout's files. Never write test data to them: they're gitignored and have no copy to restore from. Put test files in `.scratch/` or set env vars inline.
+- In a worktree, `.env` is a symlink to the live checkout's. Never write test data to it: it's gitignored and has no copy to restore from. Put test files in `.scratch/` or set env vars inline.
 
 ## Privacy
 
-- This repo is public. Never put real chat messages, usernames or server emoji names in PRs, commits, tests or fixtures. Use synthetic conversations, such as `jev_eval.py`'s scenarios. You can validate against real logs locally, but describe what you found without quoting them.
+- This repo is public. Never put real chat messages, usernames or server emoji names in PRs, commits, tests or fixtures. Use synthetic conversations, such as `rocky_replay.py --fresh`'s chat. You can validate against real logs locally, but describe what you found without quoting them.
 - Rocky's thinking is kept in its logs as Anthropic's thinking blocks (`reasoning_details`, each with a summarised `text` and an encrypted `signature`). Never print or quote a block's `text` in an agent session: an agent doing that was stopped by a `reasoning_extraction` refusal, which Anthropic uses for requests that try to get a model's reasoning into its response text ([docs](https://platform.claude.com/docs/en/build-with-claude/thinking#summarized-thinking)). Lengths, counts and the other fields are fine. Strip the blocks before printing logs: `jq 'del(.. | .reasoning?, .reasoning_details?)'`.
 - Never edit a thinking block. The harness sends them back with Rocky's log, and Anthropic rejects a modified block with a 400 ([docs](https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks)).
 - `rocky_lines.txt` holds copyrighted quotes. Never print or commit it.
 
 ## Testing
 
-- `scripts/setup.sh` sets up a clone or worktree: it installs the pinned Python and uv with mise and links `.env` and `custom_vocab.txt` in a worktree. Prefix commands with `mise exec --` if `uv --version` doesn't match `mise.toml`.
+- `scripts/setup.sh` sets up a clone or worktree: it installs the pinned Python and uv with mise and links `.env` in a worktree. Prefix commands with `mise exec --` if `uv --version` doesn't match `mise.toml`.
 - Tests run offline: `uv run --with-requirements requirements.txt python -m unittest`.
 - `rocky_replay.py` replays messages to Rocky on the live log, using the eval key. Run replays one at a time: each one writes the whole log to Anthropic's cache, which counts against the account's per-minute input limit.
 

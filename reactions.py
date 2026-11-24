@@ -1,5 +1,5 @@
 """
-How people reacted to what jev posted: its replies by who wrote them (Jev, or an LLM picked with !model) and by
+How people reacted to what jev posted: its replies by who wrote them (Jev, in older logs, or Rocky) and by
 length, its statuses, and the most-reacted. Reads logs/ for what jev posted, and Discord for the reactions on it now,
 since they aren't logged and keep coming after jev moves on. Reads only; costs nothing.
 

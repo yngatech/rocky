@@ -80,12 +80,6 @@ class SettingsCommandTests(_Case):
                 self.assertEqual([o.label for o in self.menu(view, "LOG_TOKENS").options],
                                  ["25K tokens", "50K tokens", "90K tokens"])
 
-    async def test_the_same_whichever_model_is_writing(self):
-        for model in ("jev", "rocky"):
-            with self.subTest(model=model), patch.object(j, "model_name", model):
-                view = (await self.open_settings())["view"]
-                self.assertEqual([m.key for m in self.menus(view)], ["STATUS_EVERY", "LOG_TOKENS"])
-
     async def test_a_value_not_in_the_menu_still_shows_as_chosen(self):
         rh.LOG_TOKENS = 75_000
         view = (await self.open_settings())["view"]
@@ -128,28 +122,28 @@ class StatusIntervalTests(_Case):
         super().setUp()
         patch_all(self, [(j, "heard", True), (j, "has_credit", True), (j, "status_turn", 0),
                          (j, "tried_at", datetime.now(timezone.utc) - timedelta(minutes=90)),
-                         (j, "generate_filtered_status", AsyncMock(return_value=None)),
+                         (j, "llm_status", AsyncMock(return_value=None)),
                          (j.bot._connection, "user", SimpleNamespace(display_name="rocky"))])
 
     async def test_a_new_interval_counts_from_the_last_status_straight_away(self):
         await j.update_status.coro()
-        j.generate_filtered_status.assert_not_awaited()  # 90 minutes into 180
+        j.llm_status.assert_not_awaited()  # 90 minutes into 180
 
         j.change_setting("STATUS_EVERY", 60)
         with patch.object(j, "write_trace"):
             await j.update_status.coro()
-        j.generate_filtered_status.assert_awaited_once()
+        j.llm_status.assert_awaited_once()
 
-        j.generate_filtered_status.reset_mock()
+        j.llm_status.reset_mock()
         j.heard = True  # it failed, so it tries again — but not for another hour
         await j.update_status.coro()
-        j.generate_filtered_status.assert_not_awaited()
+        j.llm_status.assert_not_awaited()
 
     async def test_off_makes_none(self):
         j.change_setting("STATUS_EVERY", 0)
         j.tried_at = None
         await j.update_status.coro()
-        j.generate_filtered_status.assert_not_awaited()
+        j.llm_status.assert_not_awaited()
 
 
 if __name__ == "__main__":

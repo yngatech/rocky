@@ -205,8 +205,8 @@ class TurnTests(_Case):
                                            reasoning=[{"type": "reasoning.text", "text": "a cat fact"}]))
         self.assertEqual((turn.text, turn.reactions, turn.kept, turn.requests),
                          ("Biscuit. Good name.", [(1, "🐱")], [("remember", 1, "pip: has a cat called Biscuit")], 1))
-        (name, messages, max_tokens), kwargs = llm.call_args
-        self.assertEqual((name, max_tokens, kwargs), ("rocky", rh.MAX_TOKENS, {"tools": rh.TOOLS, "reasoning": rh.REASONING}))
+        (messages, max_tokens), kwargs = llm.call_args
+        self.assertEqual((max_tokens, kwargs), (rh.MAX_TOKENS, {"tools": rh.TOOLS, "reasoning": rh.REASONING}))
         self.assertIn('woke_you="yes"', j.text_of(messages[-1]["content"]))
         # marked for the cache: without the marks, every turn read the whole log at full price
         self.assertEqual([m["content"][0]["cache_control"] for m in (messages[0], messages[1], messages[-1])], [rh.CACHE] * 3)
@@ -235,7 +235,7 @@ class TurnTests(_Case):
                 # Both its responses and the result between them, for the day's log (and rocky_viewer)
                 self.assertEqual([e["type"] for e in turn.events], ["rocky", "result", "rocky"])
                 self.assertEqual(turn.events, self.log.events[-3:])
-                self.assertEqual(llm.call_args.args[1][-1], {"role": "tool", "tool_call_id": "call_0", "content": result})
+                self.assertEqual(llm.call_args.args[0][-1], {"role": "tool", "tool_call_id": "call_0", "content": result})
 
     async def test_at_the_bar_it_sees_what_happened_before_it_speaks(self):
         with patch.object(rh, "bar_state", lambda now=None: (True, "The Hail Mary is open until 23:00. Menu: Blip-A Lager £4.90.")), \
@@ -246,7 +246,7 @@ class TurnTests(_Case):
         self.assertEqual((turn.text, turn.reactions, turn.requests), ("Rocky have beer. Good, good, good.", [(1, "🍺")], 3))
         # What it wrote before it knew isn't posted, nor shown to it as said
         self.assertEqual([e["text"] for e in self.log.events if e["type"] == "rocky"], ["", "", "Rocky have beer. Good, good, good."])
-        self.assertEqual(llm.call_args.args[1][-1]["content"], "Ordered: Blip-A Lager, £4.90.")
+        self.assertEqual(llm.call_args.args[0][-1]["content"], "Ordered: Blip-A Lager, £4.90.")
 
     async def test_what_it_ordered_remembered_and_forgot_is_shown_in_call_order(self):
         rh.memory("400")["facts"].append({"n": 9, "about": "pip", "fact": "likes lager", "at": ""})
@@ -277,7 +277,7 @@ class TurnTests(_Case):
         first = self.said("pip", "rocky soup?", 0, to_bot=True)
         meanwhile = []
 
-        async def llm(model, messages, *args, **kwargs):
+        async def llm(messages, *args, **kwargs):
             if not meanwhile:  # a second message to it arrives during the first request, as live
                 meanwhile.append(self.said("moss", "rocky also tea?", 0, to_bot=True))
                 return answer("Soup good.", [("remember", {"about": "pip", "fact": "likes soup"})])
@@ -290,7 +290,7 @@ class TurnTests(_Case):
             self.assertEqual([e["type"] for e in self.log.events], ["message", "rocky", "result", "message"])
             turn = await rh.take_turn(self.log, meanwhile[0])
         self.assertEqual((turn.text, called.await_count), ("Tea good too.", 2))
-        self.assertIn("also tea?", j.text_of(called.call_args.args[1][-1]["content"]))
+        self.assertIn("also tea?", j.text_of(called.call_args.args[0][-1]["content"]))
 
     async def test_a_message_that_comes_during_its_tool_calls_still_has_its_own_turn(self):
         first = self.said("pip", "rocky soup?", 0, to_bot=True)
@@ -301,7 +301,7 @@ class TurnTests(_Case):
             meanwhile.append(self.said("kettle", "rocky biscuit?", 0, to_bot=True))
             yield
 
-        async def llm(model, messages, *args, **kwargs):
+        async def llm(messages, *args, **kwargs):
             text = "".join(j.text_of(m["content"]) for m in messages if m["role"] == "user")
             if "biscuit" in text:  # only a later turn sees it
                 self.assertEqual(messages[-1]["role"], "user")
@@ -333,10 +333,10 @@ class TurnTests(_Case):
         self.assertEqual((turn.text, turn.requests, llm.await_count), ("", 0, 1))
         # Both were the first turn's to answer, and its request said so
         self.assertTrue(first["woke"] and second["woke"])
-        self.assertEqual(j.text_of(llm.await_args.args[1][-1]["content"]).count('woke_you="yes"'), 2)
+        self.assertEqual(j.text_of(llm.await_args.args[0][-1]["content"]).count('woke_you="yes"'), 2)
 
     async def test_a_message_answered_elsewhere_isnt_this_turns_nor_does_a_status_answer_one(self):
-        earlier = self.said("kettle", "rocky biscuit?", 0, to_bot=True)  # answered while another !model was chosen
+        earlier = self.said("kettle", "rocky biscuit?", 0, to_bot=True)  # answered by Jev, in a log from before Rocky alone wrote
         self.log.add("rocky", text="Biscuit good.", calls=[], id=901, elsewhere=True)
         chatter = self.said("moss", "tea anyone", 1)
         q = self.said("pip", "rocky soup?", 2, to_bot=True)
@@ -346,7 +346,7 @@ class TurnTests(_Case):
             turn = await rh.take_turn(self.log, q)
         self.assertEqual(("woke" in earlier, "woke" in chatter, q["woke"]), (False, False, True))
         self.assertEqual((turn.text, llm.await_count), ("Soup good.", 1))
-        self.assertEqual(llm.await_args.args[1][-1]["role"], "user")  # never ending with Rocky's
+        self.assertEqual(llm.await_args.args[0][-1]["role"], "user")  # never ending with Rocky's
 
 
 class LookTests(_Case):
@@ -372,7 +372,7 @@ class LookTests(_Case):
         self.assertEqual((turn.text, turn.requests), ("Cat orange. Fat, fat, fat.", 2))
         # what it guessed before it looked isn't posted, nor shown to it as said
         self.assertEqual([e["text"] for e in self.log.events if e["type"] == "rocky"], ["", "Cat orange. Fat, fat, fat."])
-        self.assertEqual(llm.call_args.args[1][-1], {"role": "tool", "tool_call_id": "call_0", "content": [
+        self.assertEqual(llm.call_args.args[0][-1], {"role": "tool", "tool_call_id": "call_0", "content": [
             {"type": "text", "text": "Message 1's picture:"}, {"type": "image_url", "image_url": {"url": self.PICTURE}}]})
         self.assertEqual(rh.readable(self.log, "rocky").splitlines()[-2], "[Message 1's picture:]")
         # and it's still there in later requests, after a restart too
@@ -390,8 +390,8 @@ class LookTests(_Case):
                 self.log = rh.Log("bot-spam", "400", 300)
                 turn, llm, _ = await self.look(answer(calls=[("look", {"message": 1})]), answer("Rocky not see."),
                                                found=found, error=error)
-                self.assertEqual(llm.call_args.args[1][-1]["content"], told)
-                self.assertNotIn("image_url", json.dumps(llm.call_args.args[1]))
+                self.assertEqual(llm.call_args.args[0][-1]["content"], told)
+                self.assertNotIn("image_url", json.dumps(llm.call_args.args[0]))
 
     async def test_a_messages_pictures_are_fetched_again_and_shrunk(self):
         big, gif, text = self.png((3000, 1500)), self.png((40, 40), "P", "GIF"), b"not a picture"
@@ -669,7 +669,7 @@ class KeepingTests(_Case):
                 llm = AsyncMock(return_value=answer("Hi."))
                 with patch.object(j, "llm_message", llm):
                     await rh.take_turn(self.log, q)
-                self.assertEqual("secret" not in j.text_of(llm.call_args.args[1][2]["content"]), tidied)
+                self.assertEqual("secret" not in j.text_of(llm.call_args.args[0][2]["content"]), tidied)
                 self.assertGreater(self.log.asked, datetime.now(timezone.utc) - timedelta(minutes=1))
 
     def test_past_its_size_the_oldest_half_goes_at_a_message(self):
