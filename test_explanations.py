@@ -160,7 +160,8 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
     async def test_context_uses_exact_window_and_cache_counts_and_preserves_the_transcript(self):
         for long in (False, True):
             with self.subTest(long=long):
-                t = dict(self.logged, llm="haiku", llm_window=1_000_000, llm_prompt_tokens=18_673,
+                t = dict({k: v for k, v in self.logged.items() if k not in ("history", "steps", "asked")},
+                         llm="rocky", llm_window=1_000_000, llm_prompt_tokens=18_673,
                          llm_cached_tokens=14_533, llm_messages=291, llm_completion_tokens=24,
                          transcript="Speaker: " + "tea " * (600 if long else 1))
                 j.write_trace(t)
@@ -169,7 +170,7 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
                 await j.context_action.callback(self.interaction(), self.target(t))
                 embed, = self.embeds(self.sent[0])
                 self.assertEqual({f.name: f.value for f in embed.fields},
-                                 {"Model": "Haiku", "Chat messages": "291", "Output": "24 tokens",
+                                 {"Model": "Rocky", "Chat messages": "291", "Output": "24 tokens",
                                   "Context window": f"`▰{'▱' * 19}` 1.9% · 18,673 / 1,000,000 tokens",
                                   "Input cache": f"`{'▰' * 16}{'▱' * 4}` 77.8% · 14,533 cached · 4,140 uncached"})
                 self.assertFalse(embed.image.url)
@@ -204,9 +205,8 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
                  transcript="Synthetic chat that Stats should not quote")
         j.write_trace(t)
         interaction = self.interaction()
-        with patch.object(j, "model_name", "jev"), patch.object(j, "stats_response", wraps=j.stats_response) as stats, \
-                patch.object(j, "llm", new_callable=AsyncMock) as llm, \
-                patch.object(j, "post", new_callable=AsyncMock) as post:
+        with patch.object(j, "stats_response", wraps=j.stats_response) as stats, \
+                patch.object(j, "llm_message", new_callable=AsyncMock) as llm:
             await j.stats_action.callback(interaction, self.target(t))
             await j.stats_action.callback(self.interaction(), self.target(t, original=True))
         self.assertEqual(self.fields(), {"Model": "synthetic/previous-haiku", "Total cost": "$0.001600 USD",
@@ -216,13 +216,12 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.uploads), 0)
         stats.assert_called_once()
         llm.assert_not_awaited()
-        post.assert_not_awaited()
         interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         self.assertTrue(self.sent[0][3]["ephemeral"])
         self.assertEqual(self.sent[0][3]["allowed_mentions"].to_dict()["parse"], [])
 
     async def test_stats_find_jev_replies_reactions_and_posted_statuses(self):
-        with patch.object(j, "STATUS_CHANNEL", self.channel.id), patch.object(j, "model_name", "rocky"):
+        with patch.object(j, "STATUS_CHANNEL", self.channel.id):
             for name, t, original in [
                     ("reply", dict(self.logged, cost=.02, requests=8), False),
                     ("reaction", dict(self.logged, reaction="👍", reply=None, cost=.00001, requests=2), True),
@@ -236,7 +235,7 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(self.fields()["Context"].startswith("Not recorded"))
 
     async def test_rocky_reacting_as_well_as_replying_is_still_its_turn(self):
-        # !model rocky picks its own emoji: a reaction on its turn isn't Jev's reply-or-react check
+        # Rocky picks its own emoji: a reaction on its turn isn't Jev's reply-or-react check
         t = dict({k: v for k, v in self.logged.items() if k != "steps"},  # Jev's words: none in a turn of rocky's
                  llm="rocky", llm_model="synthetic/haiku", reply="Teal. Good colour.", reaction="🎨",
                  cost=.00115, requests=2, llm_window=1_000_000, llm_prompt_tokens=49_027, llm_cached_tokens=48_813,
@@ -296,12 +295,12 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
     async def test_diagnostics_explain_request_purposes_routing_and_billing_privately(self):
         t = dict(self.logged, llm="haiku", cost=.000658, byok_cost=.000577, requests=2, seconds=2.5,
                  llm_cached_tokens=14_533, llm_completion_tokens=24, api_calls=[
-                     {"model": j.MODEL, "purpose": "decision", "status": 200, "attempt": 0,
+                     {"model": j.JEV_MODEL, "purpose": "decision", "status": 200, "attempt": 0,
                       "router_cost": .000081, "is_byok": False, "key_cost": 0},
-                     {"model": j.LLMS["rocky"]["id"], "purpose": "reply", "status": 200, "attempt": 0,
+                     {"model": j.LLM_MODEL, "purpose": "reply", "status": 200, "attempt": 0,
                       "router_cost": 0, "is_byok": True, "key_cost": .000577}])
         j.write_trace(t)
-        with patch.object(j, "llm", new_callable=AsyncMock) as llm:
+        with patch.object(j, "llm_message", new_callable=AsyncMock) as llm:
             await j.diagnostics_action.callback(self.interaction(), self.target(t))
             await j.diagnostics_action.callback(self.interaction(), self.target(t, original=True))
         fields = self.fields()
@@ -339,9 +338,9 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_diagnostics_count_failed_attempts_and_do_not_price_unknown_failures_as_free(self):
         t = dict(self.logged, llm="haiku", cost=.001, requests=1, api_calls=[
-            {"model": j.LLMS["rocky"]["id"], "purpose": "reply", "status": 429, "attempt": 0,
+            {"model": j.LLM_MODEL, "purpose": "reply", "status": 429, "attempt": 0,
              "router_cost": None, "is_byok": False, "key_cost": 0},
-            {"model": j.LLMS["rocky"]["id"], "purpose": "reply", "status": 200, "attempt": 1,
+            {"model": j.LLM_MODEL, "purpose": "reply", "status": 200, "attempt": 1,
              "router_cost": .001, "is_byok": False, "key_cost": 0}])
         j.write_trace(t)
         await j.diagnostics_action.callback(self.interaction(), self.target(t))
@@ -352,7 +351,7 @@ class ExplanationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Stopped early", self.fields()["Write the reply"])  # older logs have no endings
 
     async def test_diagnostics_show_refusals_and_other_early_stops(self):
-        call = {"model": j.LLMS["rocky"]["id"], "purpose": "reply", "status": 200, "router_cost": 0,
+        call = {"model": j.LLM_MODEL, "purpose": "reply", "status": 200, "router_cost": 0,
                 "is_byok": False, "key_cost": 0, "id": "gen-synthetic", "provider": "Anthropic"}
         t = dict(self.logged, llm="haiku", cost=0, requests=4, api_calls=[
             call | {"attempt": 0, "finish_reason": "content_filter", "native_finish_reason": "refusal"},

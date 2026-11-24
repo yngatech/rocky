@@ -15,8 +15,6 @@ fi
 
 uv run --with-requirements requirements.txt python -c ''
 
-# In a worktree, link .env and custom_vocab.txt from the main clone (symlinks: never write test data to them).
+# In a worktree, link .env from the main clone (a symlink: never write test data to it).
 main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
-for f in .env custom_vocab.txt; do
-  [ -e "$f" ] || [ -L "$f" ] || [ ! -e "$main/$f" ] || ln -s "$main/$f" "$f"
-done
+[ -e .env ] || [ -L .env ] || [ ! -e "$main/.env" ] || ln -s "$main/.env" .env

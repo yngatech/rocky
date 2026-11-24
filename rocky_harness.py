@@ -1,6 +1,5 @@
 """
-Rocky as an agent: an LLM is Rocky, the channel is its conversation, and what it writes is posted. !model rocky, in every
-channel. A !nocontext message opens a thread, a channel of its own with a log like any other, but without memories.
+Rocky as an agent: an LLM is Rocky, the channel is its conversation, and what it writes is posted, in every channel. A !nocontext message opens a thread, a channel of its own with a log like any other, but without memories.
 
 Each channel is an append-only log of events. People's messages, reactions and edits come in as user turns, written as
 XML with who, when and what they reply to. Rocky's turns are the assistant's: it thinks, then its text is its message,
@@ -546,7 +545,7 @@ def said(content, bot_name):
 def tools_for(log):
     return TOOLS if log.space else [t for t in TOOLS if t["function"]["name"] not in MEMORY_CALLS]
 
-async def take_turn(log, waking, model="rocky", bot_name="rocky", typing=None):
+async def take_turn(log, waking, bot_name="rocky", typing=None):
     turn = Turn()
     # Already in one of its turns' requests, before what it said: it's had its answer. Its messages from outside a turn
     # (spoke_elsewhere) don't count — a status posted while a message waited doesn't answer it
@@ -572,12 +571,12 @@ async def take_turn(log, waking, model="rocky", bot_name="rocky", typing=None):
         for request in range(1 + FOLLOW_UPS):
             seen = turn.events[-1] if turn.events else began
             async with typing() if typing and request else contextlib.nullcontext():
-                messages = render(log, bot_name, cache=bool(j.LLMS[model].get("cache_marks")), until=seen)
+                messages = render(log, bot_name, until=seen)
                 # A request can't end with Rocky (Haiku 5.5 takes it as a prefill, and refuses it): when one of its messages
                 # from outside a turn came after the one that woke it. Not a str, so the cache mark stays on people's turn
                 if messages[-1]["role"] == "assistant":
                     messages.append({"role": "user", "content": [{"type": "text", "text": "(Your turn.)"}]})
-                message = await j.llm_message(model, messages, MAX_TOKENS, tools=tools_for(log), reasoning=REASONING)
+                message = await j.llm_message(messages, MAX_TOKENS, tools=tools_for(log), reasoning=REASONING)
             if message is None:
                 break
             turn.requests += 1
@@ -872,8 +871,7 @@ def deleted(channel_id, message_id):
             log.add("deleted", on=on)
         changed(log)
 
-# One of Rocky's messages from outside a turn (written while another !model was chosen, or a status posted in
-# STATUS_CHANNEL), so the log has it — loaded if nothing's been said there since a restart
+# One of Rocky's messages from outside a turn (a status posted in STATUS_CHANNEL), so the log has it — loaded if nothing's been said there since a restart
 def spoke_elsewhere(channel, text, sent):
     if not has_log(channel.id):
         return

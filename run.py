@@ -27,7 +27,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_CMD = (["mise", "exec", "--"] if shutil.which("mise") else []) + [
     "uv", "run", "--with-requirements", "requirements.txt", "jev_bot.py"]
 # Files the running bot never loads: pulling changes to only these doesn't restart it. Anything else does.
-NO_RESTART = [".github/*", "scripts/*", "*.md", "test_*.py", "fakes.py", "jev_eval.py", "rocky_replay.py",
+NO_RESTART = [".github/*", "scripts/*", "*.md", "test_*.py", "fakes.py", "rocky_replay.py",
               "renovate.json", ".gitignore"]
 FINISH_TIMEOUT = 300    # seconds to wait for the bot to exit after asking it to stop, before killing it
 

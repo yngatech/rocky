@@ -1,5 +1,5 @@
 """
-Replays messages to `!model rocky` on a copy of the live channel log — to see how a change to Rocky answers before it
+Replays messages to Rocky on a copy of the live channel log — to see how a change to Rocky answers before it
 ships. Each run starts from the log and memories as they are, adds the message, and prints what Rocky did: its tool
 calls and their results, its reactions, and what it said. Nothing is written back, and its thinking isn't printed.
 
@@ -102,7 +102,6 @@ async def main():
     ap.add_argument("--image", help="a picture sent with each message, for look — a synthetic one, not from the chat")
     ap.add_argument("--with", dest="also", action="append", default=[], metavar="AUTHOR: TEXT",
                     help="another message to Rocky, a moment after, before its turn (repeatable)")
-    ap.add_argument("--model", default="rocky", help="an LLM with the harness (default rocky)")
     args = ap.parse_args()
     messages = list(args.messages)
     if args.file:
@@ -112,8 +111,6 @@ async def main():
     if any(":" not in a for a in args.also):
         ap.error("--with takes AUTHOR: TEXT")
     also = [tuple(x.strip() for x in a.split(":", 1)) for a in args.also]
-    if not j.LLMS.get(args.model, {}).get("harness"):
-        ap.error(f"{args.model} isn't an LLM with the harness")
     # Its own key, so replays have their own limits and usage on OpenRouter and Anthropic, apart from the bot's
     eval_key = os.environ.get("OPENROUTER_API_KEY_EVAL")
     if not eval_key:

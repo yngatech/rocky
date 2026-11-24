@@ -1,8 +1,6 @@
 """
-Jev Discord Bot — tournament sampling + history.
-
-Jev writes word by word, picking each from a bucket tournament over the vocab; !model can hand the writing to an
-LLM, and !model rocky makes the channel Rocky's own conversation (rocky_harness).
+The Discord bot: Rocky, Haiku as the Eridian engineer from Project Hail Mary, with each channel its own conversation
+(rocky_harness), and a custom status it writes now and then.
 """
 
 import io
@@ -42,64 +40,20 @@ OPENROUTER_KEY = os.environ["OPENROUTER_API_KEY"]
 STATUS_CHANNEL = int(os.environ.get("STATUS_CHANNEL_ID") or 0)  # where each new status is also posted — unset for nowhere
 TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE") or "UTC")  # the clock an LLM's transcript shows times on (IANA name)
 VIEWER_PORT = int(os.environ.get("ROCKY_VIEWER_PORT") or 0)  # the page of Rocky's logs, on 127.0.0.1 — unset for none
-API_URL = "https://openrouter.ai/api/alpha/decisions"
-MODEL = "~typesafe/jev-latest"
+# Jev, the word-by-word writer before Rocky, in old logs: its model, and the token that ended a reply
+JEV_MODEL = "~typesafe/jev-latest"
 END = "<END>"
 
-MAX_CHOICES = 255
-QUESTIONS_PER_CALL = 20
-TOP_PER_BUCKET = 2
-MAX_WORDS = 30
-MIN_WORDS = 2
-HISTORY_TO_BOT = 6              # earlier messages to jev (mentions, pinged replies) in the transcript
-HISTORY_CHATTER = 8             # earlier channel messages not aimed at jev in the transcript — 0 to leave them out
 HISTORY_SCAN = 400              # recent messages read to rebuild a channel's history after a restart
+TO_BOT_KEPT = 7                 # messages to the bot kept in a channel's history past HISTORY_SCAN
 FILL_SCAN = 3000                # the most messages read back to fill a channel's new Rocky log (rocky_harness.FILL)
 CATCH_UP_WINDOW = 30            # minutes — on startup, answer each channel's latest message to jev from this long ago that it missed
-STOP_THRESHOLD = 0.5            # let jev stop earlier — the good part is always the first half
-REPEAT_PENALTY = 1.5
-REPEAT_WINDOW = 8
-CONTENT_PENALTY = 2.5
-CONTENT_PENALTY_CAP = 4
-STOP_PENALTY = 1.6
-STOP_PENALTY_CAP = 6
-# Repeats across replies: jev copies itself — "Dunno" went 0.32 → 0.61 as its own "Dunno? Dunno?" replies filled
-# the transcript, and one "Private? Private?" made five. Each of its last ECHO_TURNS answers (replies or reactions)
-# that said a word divides it by ECHO_PENALTY. Replayed over a day's logs, 2.0 took replies opening with "dunno"
-# from 15 of 40 to 8 and kept the ones it clearly meant; 2.5 dropped "Dunno" for "Yes" at 0.12 vs 0.09 after one
-ECHO_TURNS = 3
-ECHO_PENALTY = 2.0
-# Words that say jev has nothing to say. Funny once in a while, but they opened half its replies, and the echo
-# penalty only moved jev from one to the next: "dunno" went, "no" (a stopword, so never echoed) took over, "No? No?"
-# three times running. So they count as one word across replies: each of jev's last ECHO_TURNS answers that said
-# any of them divides them all by NOTHING_PENALTY, instead of ECHO_PENALTY. The first is free, and a run breaks
-# into saying something ("century egg?" "Yuck", "toast with butter? jam?" "Jam"). Replayed over two days' logs,
-# 3.0 took replies opening with one from 59 of 130 to 35; 2.0 left 49, 4.0 left 28
-NOTHING = {"dunno", "no", "crickets", "chirping", "silence", "silent", "empty", "quiet", "blank", "shrug", "huh",
-           "ignoring"}
-NOTHING_PENALTY = 3.0
-VOCAB_SIZE = 10_000             # vocab.txt is ordered most common first — every word costs ~7 input tokens on every step
-REACT_THRESHOLD = 0.4           # react when P(message is a question/request for jev) is below this — questions ~0.8-0.98, chatty ~0.03-0.45
 STATUS_EVERY = 180              # minutes between new statuses — 0 to leave the status alone; /settings changes it
-STATUS_MIN_WORDS = 4            # a short status is just "Fine thanks" — the soup comes from making it keep going
-STATUS_MAX_WORDS = 12
-STATUS_CHAT = 8                 # recent messages from the latest active channel, in view for every other jev status and every LLM one — 0 for none
-STATUS_RECENT = 7               # an LLM's statuses from earlier days, in view so it doesn't say the same again
-STATUS_ATTEMPTS = 3             # keep the previous status if this many candidates fail the meaning check
-STATUS_THRESHOLD = 0.6          # P(the finished status makes sense on its own), allowing jev's broken wording
-# Bare "Next word?" reads as "which word fits this?" — jev described its reply ("empty", "silent", "garbled")
-# instead of continuing it, but "Next word of {bot_name}'s reply?" didn't help live and made <END> far likelier
-NEXT_WORD = "Next word?"
-
-STOPWORDS = set(
-    "a an the and or but if of to in on at by for with from as is are was were be been "
-    "being it its this that these those i you he she they we me him her them us my your "
-    "his their our not no so then than there here when where which who what how all any "
-    "some each into over under about above below up down out off again more most very "
-    "can will just do does did have has had would could should may might must".split()
-)
+STATUS_CHAT = 8                 # recent messages from the latest active channel, in view for every status — 0 for none
+STATUS_RECENT = 7               # its statuses from earlier days, in view so it doesn't say the same again
+# Words written out (render): a status's opener, and Jev's reply in old logs; and a message as one line (unrender)
 NO_SPACE_BEFORE = set(".,!?;:)\"'\n")
-NEWLINE = "\\n"  # vocab.txt's line break token — jev sees it literally, Discord gets a real newline
+NEWLINE = "\\n"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("jev")
@@ -126,78 +80,15 @@ def write_trace(t):
 channel_history: dict[int, list[dict]] = defaultdict(list)
 dm_channels: set[int] = set()  # channels in channel_history that are DMs, kept out of the status
 
-# The last `to_bot` messages to jev and the last `chatter` other messages, in order
-def recent(entries, to_bot=None, chatter=None):
-    limits = {True: HISTORY_TO_BOT if to_bot is None else to_bot, False: HISTORY_CHATTER if chatter is None else chatter}
-    keep = []
-    for e in reversed(entries):
-        kind = e.get("to_bot", True)
-        if limits[kind] > 0:
-            limits[kind] -= 1
-            keep.append(e)
-    return keep[::-1]
-
-# What the transcript shows: recent() of the channel — or for an LLM, its last `limit` messages — minus messages to
-# jev it never answered but has answered something after since — left behind (sent while it was offline, say), they
-# pull jev back to their topic. One being answered right now is "pending", so a quick reaction to a later message
-# doesn't hide it.
-def shown(entries, limit=None):
-    keep, answered_since = [], False
-    for e in reversed(entries):
-        if e.get("to_bot", True):
-            if "reply" in e or "reaction" in e:
-                answered_since = True
-            elif answered_since and not e.get("pending"):
-                continue
-        keep.append(e)
-    return recent(keep[::-1]) if limit is None else keep[::-1][-limit:]
-
-# What a channel's history keeps: enough for Jev's transcript — which can reach further back for messages to jev
-# when there's a lot of chatter — and all a rebuild reads, so Rocky's log gets everything it missed while jev was
-# offline.
-def kept(entries, ch_id):
-    keep = {id(e) for e in recent(entries, HISTORY_TO_BOT + 1, HISTORY_CHATTER)} | {id(e) for e in entries[-HISTORY_SCAN:]}
+# What a channel's history keeps: all a rebuild reads, so Rocky's log gets everything it missed while the bot was
+# offline, and the last TO_BOT_KEPT messages to the bot from further back, so Rocky can still ping who sent them
+def kept(entries):
+    keep = {id(e) for e in [e for e in entries if e.get("to_bot", True)][-TO_BOT_KEPT:] + entries[-HISTORY_SCAN:]}
     return [e for e in entries if id(e) in keep]
 
 def add_history(ch_id, entry):
-    h = channel_history[ch_id]
-    h.append(entry)
-    channel_history[ch_id] = kept(h, ch_id)
+    channel_history[ch_id] = kept(channel_history[ch_id] + [entry])
     return entry
-
-# Vocab
-VOCAB_PATH = Path(__file__).parent / "vocab.txt"
-CUSTOM_VOCAB_PATH = Path(__file__).parent / "custom_vocab.txt"
-BANNED = {"unanswered"}
-ALL_WORDS = [w for w in VOCAB_PATH.read_text().split("\n") if w and w.lower() not in BANNED]
-# Punctuation is at the end of vocab.txt, so these are kept past the cutoff — without them jev spells out "period"
-# when it wants a full stop. Not quotes or brackets: jev scatters them unpaired ("I?' remember' her")
-PUNCTUATION = [".", ",", "!", "?", NEWLINE]
-SENTENCE_ENDS = {".", "!", "?"}  # count as votes to end — see loom()
-BASE_VOCAB = ALL_WORDS[:VOCAB_SIZE] + [w for w in PUNCTUATION if w not in ALL_WORDS[:VOCAB_SIZE]]
-log.info(f"Loaded {len(BASE_VOCAB)} vocab words")
-
-# Server words/phrases: one per line, "#" comments, multi-word phrases are picked as a single unit
-def load_custom_vocab():
-    if not CUSTOM_VOCAB_PATH.exists():
-        return []
-    seen = {w.lower() for w in BASE_VOCAB}
-    custom = []
-    for line in CUSTOM_VOCAB_PATH.read_text().split("\n"):
-        w = " ".join(line.split("#", 1)[0].split())
-        if w and w.lower() not in BANNED and w.lower() not in seen:
-            seen.add(w.lower())
-            custom.append(w)
-    return custom
-
-CUSTOM_VOCAB = load_custom_vocab()
-BASE_VOCAB += CUSTOM_VOCAB
-log.info(f"Loaded {len(CUSTOM_VOCAB)} custom vocab words")
-
-# Reactions: unicode emoji from emoji.txt, plus the server's own emoji by their :name:
-EMOJI_PATH = Path(__file__).parent / "emoji.txt"
-BASE_EMOJI = [e for e in EMOJI_PATH.read_text().split("\n") if e]
-log.info(f"Loaded {len(BASE_EMOJI)} reaction emoji")
 
 # An emoji as jev sees it: unicode as itself, the server's own by :name:
 def emoji_text(e):
@@ -207,15 +98,9 @@ def emoji_text(e):
         return e.name
     return f":{e.name}:"
 
+# The server's own emoji, by the :name: Rocky reacts with
 def emoji_vocabulary(guild):
-    emoji = {e: e for e in BASE_EMOJI}
-    if guild:
-        emoji |= {f":{e.name}:": e for e in guild.emojis if e.is_usable()}
-    return emoji
-
-
-def is_word(w):
-    return w.replace(" ", "").isalnum()
+    return {f":{e.name}:": e for e in guild.emojis if e.is_usable()} if guild else {}
 
 
 def render(tokens):
@@ -229,72 +114,8 @@ def render(tokens):
     return re.sub(r"(^|[.!?]\s+|\n)([a-z])", lambda m: m.group(1) + m.group(2).upper(), out.strip(" "))
 
 
-# One line per turn in the transcript — newlines go back to the token jev chose them as
 def unrender(text):
     return text.replace("\n", NEWLINE)
-
-
-def vocabulary(message):
-    seen = set(BASE_VOCAB)
-    # Apostrophes only inside a word, and no single letters — "'s" on its own would come out as "He 's" or "He s"
-    extra = [w for w in re.findall(r"[a-z]+(?:'[a-z]+)*", message.lower())
-             if len(w) > 1 and w not in seen and not seen.add(w)]
-    return BASE_VOCAB + extra + [END]
-
-
-# Words that say the same thing, so penalty() counts them as repeats of each other — otherwise jev dodges it by
-# switching between them ("Hi hey hi hey", "Yeah yes yea yes yea yeah"). Only fillers and greetings: words that
-# merely look or sound alike ("Google goo woo") or mean nearly the same ("skinny thin") are left alone.
-SIMILAR = ["yes yeah yea yep yup ya yah yeh ye yas", "no nah nope naw", "hi hey hello hiya heya howdy hai yo",
-           "ok okay k kk okey", "lol lmao lmfao haha hahaha rofl", "dunno idk", "what wat wut",
-           "thanks thx ty", "bye cya goodbye", "hmm hm hmmm", "um uh erm uhh umm", "wow whoa woah"]
-SAME = {w: g.split()[0] for g in SIMILAR for w in g.split()}
-# Hesitation words compete individually, but still count as repeats of each other.
-UNPOOLED = NOTHING | {"um", "hmm"}
-
-def same(word):
-    return SAME.get(word.lower(), word)
-
-# Emoji that say the same as a word, so a run of "Dunno" replies counts against 🤷 and a run of 🤷 against "Dunno"
-EMOJI_SAYS = {"🤷": "dunno"}
-
-def said_as(token):
-    return EMOJI_SAYS.get(token) or same(token).lower()
-
-def said_in(text):
-    return {said_as(w) for w in re.findall(r"[a-z]+(?:'[a-z]+)*", text.lower())}
-
-# jev's last ECHO_TURNS answers in view — replies and reactions — each as the set of things it said
-def recent_answers(history):
-    answers = []
-    for h in history or []:
-        if h["role"] == "assistant":
-            answers.append(h["content"])
-        elif "reply" in h:
-            answers.append(h["reply"])
-        elif "reaction" in h:
-            answers.append(h["reaction"])
-    return [{said_as(a)} | said_in(a) for a in answers[-ECHO_TURNS:]]
-
-
-# recent: recent_answers() — a word jev said in them is a repeat too, apart from ones in `exempt`, said_in() the
-# message it's answering: repeating what someone just said is fair game
-def penalty(reply, word, recent=(), exempt=()):
-    reply, word = [same(w) for w in reply], same(word)
-    local = reply[-REPEAT_WINDOW:].count(word) + 2 * (reply[-1:] == [word])
-    p = REPEAT_PENALTY ** local
-    seen = reply.count(word)
-    alpha = word.replace(" ", "").isalpha()
-    if alpha and word.lower() not in STOPWORDS:
-        p *= CONTENT_PENALTY ** min(seen, CONTENT_PENALTY_CAP)
-    elif alpha:
-        p *= STOP_PENALTY ** min(seen, STOP_PENALTY_CAP)
-    if said_as(word) not in exempt:
-        if said_as(word) in NOTHING:
-            p *= NOTHING_PENALTY ** sum(bool(a & NOTHING) for a in recent)
-        elif alpha and word.lower() not in STOPWORDS:
-            p *= ECHO_PENALTY ** sum(said_as(word) in a for a in recent)
-    return p
 
 
 # How a chat completion can end without its answer: OpenRouter's content_filter, or the provider's own refusal
@@ -302,27 +123,24 @@ REFUSALS = {"refusal", "content_filter"}
 FINISHED = {None, "stop", "tool_calls"}  # endings not worth a mention
 
 
-def record_api_request(model, purpose, status, attempt, usage=None, response=None):
+def record_api_request(model, purpose, status, attempt, usage, response):
     """Keep request purposes and reported billing, without storing another copy of the prompt.
 
     response: a chat completion's JSON ({} if there was none) — why it stopped, OpenRouter's generation id and the
-    provider it went to, for auditing routing. Not for Jev's decisions, which have none of these."""
+    provider it went to, for auditing routing."""
     if (t := trace.get()) is not None:
         usage = usage or {}
-        call = {
+        # any JSON at all, on any status: an odd one mustn't stop the retries (this is in finally)
+        response = response if isinstance(response, dict) else {}
+        choices = response.get("choices")
+        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+        t.setdefault("api_calls", []).append({
             "model": model, "purpose": purpose, "status": status, "attempt": attempt,
             "router_cost": usage.get("cost"), "is_byok": bool(usage.get("is_byok")),
             "key_cost": (usage.get("cost_details") or {}).get("upstream_inference_cost")
                         if usage.get("is_byok") else 0,
-        }
-        if response is not None:  # any JSON at all, on any status: an odd one mustn't stop the retries (this is in finally)
-            response = response if isinstance(response, dict) else {}
-            choices = response.get("choices")
-            choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
-            call |= {"finish_reason": choice.get("finish_reason"),
-                     "native_finish_reason": choice.get("native_finish_reason"),
-                     "id": response.get("id"), "provider": response.get("provider")}
-        t.setdefault("api_calls", []).append(call)
+            "finish_reason": choice.get("finish_reason"), "native_finish_reason": choice.get("native_finish_reason"),
+            "id": response.get("id"), "provider": response.get("provider")})
 
 
 def stopped_early(call):  # why a logged request stopped, if not by finishing: a refusal, running out of tokens
@@ -342,262 +160,10 @@ def out_of_credit(status, text):
     return status == 403 and str(source).endswith("_budget")
 
 
-async def post(session, state, questions):
-    body = {"model": MODEL, "state": state, "questions": questions}
-    purpose = ("decision" if "asked" in questions or any(q.get("instructions") == "Reaction?"
-                                                       for q in questions.values()) else
-               "status_check" if "acceptable" in questions else
-               "status" if "status" in (trace.get() or {}) else "reply")
-    for attempt in range(3):
-        status, usage = "error", None
-        try:
-            async with session.post(API_URL, json=body, timeout=aiohttp.ClientTimeout(total=30)) as r:
-                status = r.status
-                if r.status < 400:
-                    data = await r.json()
-                    usage = data.get("usage") or {}
-                    if (t := trace.get()) is not None:
-                        t["cost"] += usage.get("cost") or 0
-                        t["requests"] += 1
-                    await set_credit(True)
-                    return data.get("answers", {})
-                text = await r.text()
-                if out_of_credit(r.status, text):
-                    log.warning(f"API {r.status}: {text[:300]}")
-                    note(error="out of credit")
-                    await set_credit(False)
-                    return {}
-                log.warning(f"API {r.status} {attempt}: {text[:300]}")
-                await asyncio.sleep(1 + 2 * attempt)
-        except Exception as e:
-            status = "error"
-            log.warning(f"API err {attempt}: {e}")
-            await asyncio.sleep(1 + 2 * attempt)
-        finally:
-            record_api_request(MODEL, purpose, status, attempt, usage)
-    return {}
-
-
-def by_prob(ans):
-    return sorted(ans.get("probabilities", {}).items(), key=lambda kv: -kv[1])
-
-
-def choice_q(words, instructions):
-    return {"type": "choice", "instructions": instructions, "criteria": {w: "" for w in words}}
-
-
-# done_state: what the "is the reply complete?" question sees, if not state
-async def next_word(session, state, vocab, rng, instructions, done_state=None):
-    shuffled = list(vocab)
-    rng.shuffle(shuffled)
-    buckets = [shuffled[i:i + MAX_CHOICES] for i in range(0, len(shuffled), MAX_CHOICES)]
-    groups = [buckets[i:i + QUESTIONS_PER_CALL] for i in range(0, len(buckets), QUESTIONS_PER_CALL)]
-
-    results = await asyncio.gather(
-        *(post(session, state, {f"b{gi * QUESTIONS_PER_CALL + i}": choice_q(b, instructions)
-                                for i, b in enumerate(g)})
-          for gi, g in enumerate(groups)),
-        post(session, done_state or state, {"complete": {"type": "noul", "instructions": "Is the reply complete?"}}),
-    )
-
-    complete_noul = results[-1].get("complete", {}).get("noul", 0)
-
-    finalists = []
-    for group_answers in results[:-1]:
-        for ans in group_answers.values():
-            finalists += [w for w, p in by_prob(ans)[:TOP_PER_BUCKET] if p > 0]
-
-    if END not in finalists:
-        finalists.append(END)
-
-    runoff = await post(session, state, {"final": choice_q(finalists[:MAX_CHOICES], instructions)})
-    probs = runoff.get("final", {}).get("probabilities", {})
-
-    return probs, complete_noul
-
-
-# People's reactions to one of jev's replies, as emoji and counts: " (😂×2 💀)"
-def reacted(counts):
-    return " (" + " ".join(e if n == 1 else f"{e}×{n}" for e, n in counts.items()) + ")" if counts else ""
-
-# marked: mark messages addressed to jev for the question check, including pinged replies without a textual
-# mention. Keep existing mentions in place rather than adding a second one.
-# reactions: jev's own past reactions; their_reactions: people's reactions to jev's replies
-def transcript(message, author, bot_name, history, words, reactions=True, marked=False, their_reactions=None):
-    turns = history_turns(bot_name, history, reactions, marked, their_reactions)
-    turns.append(f"{author}: {addressed(unrender(message), bot_name, marked)}")
-    turns.append(f"{bot_name}: {unrender(render(words))}")
-    return "\n".join(turns)
-
-def addressed(text, bot_name, marked, to_bot=True):
-    mentioned = re.search(rf"(?<!\w)@{re.escape(bot_name)}(?!\w)", text)
-    return f"@{bot_name} {text}" if marked and to_bot and not mentioned else text
-
-def history_turns(bot_name, history, reactions=True, marked=False, their_reactions=None):
-    their_reactions = reactions if their_reactions is None else their_reactions
-    turns = []
-    for h in history or []:
-        name = bot_name if h["role"] == "assistant" else h["name"]
-        text = unrender(h["content"])
-        if h["role"] == "assistant" and their_reactions:
-            text += reacted(h.get("reactions"))
-        turns.append(f"{name}: {addressed(text, bot_name, marked, h['role'] == 'user' and h.get('to_bot', True))}")
-        # jev's answer, if it gave one — without it every earlier question looks unanswered, and jev goes back
-        # to them or describes the silence ("crickets"). Past reactions, jev's and people's to its replies,
-        # stay out of the question check — jev copies emoji it sees there.
-        if "reply" in h:
-            turns.append(f"{bot_name}: {unrender(h['reply'])}{reacted(h.get('reply_reactions')) if their_reactions else ''}")
-        elif reactions and "reaction" in h:
-            turns.append(f"{bot_name}: {h['reaction']}")
-    return turns
-
-
 HEADERS = {"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "application/json"}
 
 
-# The emoji jev reacts with instead of replying, or None to reply
-async def choose_reaction(message, author, bot_name, emoji, history=None):
-    rng = random.Random()
-    # Without past reactions — a run of them reads as a habit to keep up, and jev copies the last emoji
-    state = transcript(message, author, bot_name, history, [], reactions=False, marked=True)
-    note(asked_transcript=state)  # for Context
-    shuffled = list(emoji)
-    rng.shuffle(shuffled)
-    buckets = [shuffled[i:i + MAX_CHOICES] for i in range(0, len(shuffled), MAX_CHOICES)]
-    questions = {f"b{i}": choice_q(b, "Reaction?") for i, b in enumerate(buckets[:QUESTIONS_PER_CALL - 1])}
-    # Asked as "is it a question?" — "should jev react instead?" scored everything ~0.4-0.55, so no threshold separated them
-    questions["asked"] = {"type": "noul", "instructions": f"Is {author}'s last message a question or request for {bot_name}?"}
-
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        answers = await post(session, state, questions)
-        asked = answers.pop("asked", {}).get("noul", 1)
-        note(asked=asked)
-        if asked >= REACT_THRESHOLD:
-            log.info(f"  asked={asked:.2f} reply")
-            return None
-
-        if len(answers) > 1:
-            finalists = [w for ans in answers.values() for w, p in by_prob(ans)[:TOP_PER_BUCKET] if p > 0]
-            runoff = await post(session, state, {"final": choice_q(finalists[:MAX_CHOICES], "Reaction?")})
-            probs = runoff.get("final", {}).get("probabilities", {})
-        else:
-            probs = next(iter(answers.values()), {}).get("probabilities", {})
-
-    # Its own answers count against an emoji, as they do against words: jev's past reactions are hidden from it,
-    # but 🤷 still came first in a channel full of its "Dunno? Dunno?" replies
-    recent = recent_answers(history)
-    scored = {w: p / ECHO_PENALTY ** sum(said_as(w) in a for a in recent) for w, p in probs.items() if p > 0}
-    reaction = max(scored, key=scored.get, default=None)
-    log.info(f"  asked={asked:.2f} {reaction}")
-    # The likeliest before the penalty, with their raw probability and score — the reaction is the best score
-    likeliest = sorted(scored, key=probs.get, reverse=True)[:5]
-    note(reaction_candidates=[[w, round(probs[w], 3), round(scored[w], 3)] for w in likeliest])
-    return reaction
-
-
-# Most SIMILAR groups vote together; the group with the most votes wins, and its best-scoring word is said.
-# Hesitation groups (um/uh/erm and hmm/hm) vote apart, so their sum can't crowd out a substantive word.
-# Ending tokens ".", "!" and "?" count with <END>. Apart, they split the vote to end and a word won
-# instead: where master ended, jev picked <END> 31% of the time with them in the vocab and 78% without ("Dunno
-# google" went on "for", "on", "type"). So they count together, and the reply ends with the mark if jev liked that
-# best ("Dunno forgot?"). Not the words that say nothing: pooled, "dunno idk" and "no nah nope" won where jev meant
-# something else ("idk" over "hello" at 19%), which undoes NOTHING_PENALTY.
-def vote(word, stoppable):
-    if stoppable and (word == END or word in SENTENCE_ENDS):
-        return END
-    return word if said_as(word) in UNPOOLED else same(word).lower()
-
-# The word jev says from scored ({word: score}), whether it ends the reply, and the others that voted with it
-def pick(scored, stoppable):
-    votes = defaultdict(float)
-    for w, s in scored.items():
-        votes[vote(w, stoppable)] += s
-    best = max(votes, key=votes.get)
-    group = sorted((w for w in scored if vote(w, stoppable) == best), key=scored.get, reverse=True)
-    return group[0], best == END, group[1:]
-
-
-# Words jev picks one at a time to continue state(words), until it stops, runs out, or has max_words (MAX_WORDS).
-# It can't stop before min_words (MIN_WORDS) real words. done_state(words), if given, is what the "is the reply
-# complete?" question sees instead of state(words). recent and exempt go to penalty().
-async def loom(state, vocab, instructions, max_words=None, min_words=None, done_state=None, recent=(), exempt=()):
-    rng = random.Random()
-    words = []
-    steps = []
-    note(steps=steps, stop="max words")
-
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        for step in range(max_words or MAX_WORDS):
-            probs, complete = await next_word(session, state(words), vocab, rng, instructions,
-                                              done_state and done_state(words))
-            if not probs:
-                note(stop="no answer")
-                break
-
-            said = sum(1 for w in words if is_word(w))
-            stoppable = said >= (min_words or MIN_WORDS)
-            if stoppable and complete >= STOP_THRESHOLD:
-                log.info(f"  noul={complete:.2f} stop")
-                note(stop=f"done={complete:.2f}")
-                break
-
-            scored = {}
-            for w, p in probs.items():
-                if p <= 0: continue
-                if w in NO_SPACE_BEFORE and words[-1:] == [w]: continue
-                if w == END and not stoppable: continue
-                # Nothing opens with punctuation: leading newlines get stripped anyway, and a leading "?" took over
-                # whenever jev's favourite first word was held back ("? Public? Public?", "? No? No?")
-                if w in PUNCTUATION and not said: continue
-                scored[w] = p / penalty(words, w, recent, exempt)
-
-            if not scored:
-                note(stop="nothing left")
-                break
-
-            ranked = sorted(scored.items(), key=lambda kv: -kv[1])
-            word, ends, pooled = pick(scored, stoppable)
-
-            top3 = [(w, probs.get(w, 0)) for w, _ in ranked[:3]]
-            log.info(f"  [{step+1:2d}] {word:12s}  {' '.join(f'{w}:{p:.0%}' for w,p in top3)}  done={complete:.2f}"
-                     + ("  ends" if ends else ""))
-            # The best-scoring candidates, then every other one at 1% or more, each as [word, probability, score].
-            # Asked to pick from 33 countries jev said "No? Idk": "idk" at 23% scored below "no" at 4% after the echo
-            # penalty, and the countries split their vote at ~3% each — the top five showed neither.
-            likely = [w for w, _ in sorted(scored.items(), key=lambda kv: -probs[kv[0]]) if probs[w] >= 0.01]
-            steps.append({"word": word, "done": round(complete, 3), "ends": ends, "pooled": pooled,
-                          "top": [[w, round(probs[w], 3), round(scored[w], 3)]
-                                  for w in dict.fromkeys([w for w, _ in ranked[:5]] + likely)]})
-
-            if word == END:
-                note(stop="<END>")
-                break
-            words.append(word)
-            if ends:
-                note(stop=f"<END> as {word}")
-                break
-
-    return words
-
-
-async def generate_reply(message, author, bot_name, history=None):
-    # Every word and name people used in the transcript, not just the message being replied to — lets jev say what
-    # it can see. Not jev's own words: from a broken reply that would add "garbled" and "unclear" back for reuse.
-    vocab = vocabulary(" ".join([f"{h['name']} {h['content']}" for h in history or [] if h["role"] == "user"]
-                                + [f"{author} {message}"]))
-    note(transcript=transcript(message, author, bot_name, history, []))
-    # People's reactions stay out of the "complete?" question: with 😂×4 on jev's last reply in view it read a
-    # two-word reply as done, and jev stopped at "Dunno forgot" where it had gone on to "Dunno forgot liar bitch"
-    words = await loom(lambda words: transcript(message, author, bot_name, history, words),
-                       vocab, NEXT_WORD.format(bot_name=bot_name),
-                       done_state=lambda words: transcript(message, author, bot_name, history, words,
-                                                            their_reactions=False),
-                       recent=recent_answers(history), exempt=said_in(message))
-    return render(words).strip() or "..."
-
-
-# How statuses start, taken in turn. Each is the rest of a diary entry — asked "how are you feeling?" jev says
-# "Fine thanks", asked "what are you thinking about?" "I dunno anything", and as a status "Is online"
+# How statuses start, taken in turn: each is the rest of a diary entry
 STATUS_STARTS = [["i", "feel"], ["i'm", "thinking", "about"], ["i", "wonder"]]
 
 # The last STATUS_CHAT messages people sent in the channel that heard from someone most recently, one per line
@@ -609,108 +175,12 @@ def recent_chat():
     h = max(active, key=lambda h: h[-1]["at"])[-STATUS_CHAT:]
     return "\n".join(f"{e['name']}: {unrender(e['content'])}" for e in h)
 
-def status_state(bot_name, start, chat, words):
-    return (f"{chat}\n\n" if chat else "") + f"{bot_name}'s diary, today: {render(start + words)}"
-
-
-async def generate_status(bot_name, start, chat=""):
-    if (name := model_name) != "jev":
-        return await llm_status(name, bot_name, start, chat)
-    vocab = [w for w in vocabulary(chat) if w != NEWLINE]  # a status is one line
-    note(transcript=status_state(bot_name, start, chat, []))
-    words = await loom(lambda words: status_state(bot_name, start, chat, words), vocab, NEXT_WORD,
-                       max_words=STATUS_MAX_WORDS, min_words=STATUS_MIN_WORDS)
-    return render(start + words)[:128] if words else None  # 128: Discord's custom status limit
-
-
-# The judge sees only the finished status, so unseen chat cannot rescue an otherwise meaningless sentence.
-STATUS_RUBRIC = '''Judge a word-by-word generated diary status posted on its own. Its readers cannot see the conversation that inspired it. Accept a status when a reader can recover a feeling, thought, topic, or question from the words themselves. It may be silly, vague, repetitive, philosophical, or grammatically broken. It need not be informative, original, or polished.
-Ignore spelling mistakes, broken grammar, weird punctuation, repetition, and a few stray words. Read the whole status. Extra words can add a compatible thought, emphasis, humour, or uncertainty; they must not turn the status into uninterpretable question fragments or unrelated words. Do not rescue a broken sentence by imagining what its writer was responding to. A clear opening alone does not rescue a tail that loses the thought.
-An explicit feeling can stand alone: feeling strange and not knowing why is meaningful. A self-contained philosophical thought or understandable question can also stand alone. Conversely, "how it happens" with no identifiable subject, "what this means" with no intelligible thought, or a chain of "what", "is", "about", and "means" may only look like a response to unseen context. Such fragments do not make a useful standalone status.
-Examples:
-Accept: "I'm thinking about dinner hi for i about tonight what we have fridge and of" — tonight's dinner and what's in the fridge.
-Accept: "I feel hot weird strange? Why dunno?" — feels hot and strange, doesn't know why.
-Accept: "I'm thinking about something about life meaning is of matter matters." — life's meaning and what matters.
-Accept: "I wonder what does mean it? Means meaning itself is itself." — a philosophical thought about meaning itself.
-Accept: "I wonder what is happening?.? Dunno confusion confused" — wonders what's happening and expresses confusion.
-Accept: "I'm thinking about about boxing about boxing." — repetitive but clearly about boxing.
-Borderline: "I feel good. And also else." — a feeling followed by empty filler.
-Borderline: "I'm thinking about something about thing of thing." — too vague to identify a topic.
-Reject: "I wonder what is how mean means" — no recoverable question.
-Reject: "I feel fine. Period. Sans. Fat" — a feeling followed by unrelated words.
-Reject: "I'm thinking about about what the about of the of" — empty connective words.
-'''
-STATUS_QUESTION = ('Does this work as a meaningful standalone diary status under the rubric? Judge only the actual '
-                   'words. Do not assume any unseen source conversation. Borderline statuses may pass if they '
-                   'contain a recoverable thought.')
-
-
-async def status_score(mood):
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        answers = await post(session, STATUS_RUBRIC + '\nStatus to judge: ' + json.dumps(mood),
-                             {"acceptable": {"type": "noul", "instructions": STATUS_QUESTION}})
-    answer = answers.get("acceptable", {})
-    score = answer.get("noul") if isinstance(answer, dict) else None
-    # Missing or malformed decisions must not publish a candidate or spend more on regeneration.
-    return score if type(score) in (int, float) and math.isfinite(score) and 0 <= score <= 1 else None
-
-
-async def generate_filtered_status(bot_name, start, chat=""):
-    parent = trace.get()
-    attempts = []
-    note(status_attempts=attempts)
-    for _ in range(STATUS_ATTEMPTS):
-        attempt = {"status": None, "score": None, "accepted": False, "cost": 0.0, "requests": 0}
-        attempts.append(attempt)
-        token = trace.set(attempt)
-        try:
-            mood = await generate_status(bot_name, start, chat)
-            attempt["status"] = mood
-            if not mood or has_credit is False:
-                return None
-            score = await status_score(mood)
-            attempt["score"] = score
-            if score is None or has_credit is False:
-                return None
-            attempt["accepted"] = score >= STATUS_THRESHOLD
-            log.info(f"[STATUS] candidate {len(attempts)}/{STATUS_ATTEMPTS}: {mood} "
-                     f"(meaning={score:.2f}, {'accepted' if attempt['accepted'] else 'rejected'})")
-            if attempt["accepted"]:
-                # Diagnostics use the accepted generation, while the full retry history stays local.
-                if parent is not None:
-                    parent.update({k: attempt[k] for k in ("transcript", "steps", "stop", "llm", "llm_model",
-                                                           "llm_window", "llm_prompt_tokens", "llm_completion_tokens",
-                                                           "llm_cached_tokens", "llm_prompt_chars", "llm_chat_chars")
-                                   if k in attempt})
-                    parent["status_score"] = score
-                return mood
-        finally:
-            trace.reset(token)
-            if parent is not None:
-                parent["cost"] += attempt["cost"]
-                parent["requests"] += attempt["requests"]
-                if byok := attempt.get("byok_cost"):
-                    parent["byok_cost"] = parent.get("byok_cost", 0) + byok
-                if calls := attempt.get("api_calls"):
-                    parent.setdefault("api_calls", []).extend(calls)
-                if "error" in attempt:
-                    parent["error"] = attempt["error"]
-    return None
-
-
-# Instead of Jev, Haiku can be Rocky, the Eridian engineer from Project Hail Mary who the bot is named after — !model
-# switches. It answers as Rocky itself: the channel as its conversation, with tools to react and remember
-# (rocky_harness). Statuses it writes from a prompt of its own (llm_status).
-#   shuffle: a status's example lines in a fresh order every call — Claude ignores temperature, so the same chat got
-#     the same status word for word
-#   window: its context length on OpenRouter, in tokens, for Context's usage
-#   cache_marks: mark where its log's cache ends — Claude only caches what's marked, so without them every turn reads
-#     the whole log at full price
+# Haiku is Rocky, the Eridian engineer from Project Hail Mary who the bot is named after. It answers as Rocky itself:
+# the channel as its conversation, with tools to react and remember (rocky_harness). Statuses it writes from a prompt
+# of its own (llm_status).
 LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
-LLMS = {
-    "rocky": {"id": "anthropic/claude-haiku-5.5", "shuffle": True, "window": 1_000_000, "harness": True,
-              "cache_marks": True},
-}
+LLM_MODEL = "anthropic/claude-haiku-5.5"
+LLM_WINDOW = 1_000_000          # its context length on OpenRouter, in tokens, for Context's usage
 LLM_MAX_TOKENS = 60             # only to stop a runaway status
 LLM_TEMPERATURE = 1.0
 LLM_FREQUENCY_PENALTY = 0.5
@@ -752,6 +222,8 @@ LLM_STATUS = """Write {bot}'s new Discord custom status, as the rest of a diary 
 # The same line came out word for word on different days
 LLM_STATUS_RECENT = """What {bot} posted as his status on earlier days, oldest first:\n{statuses}\n\nThe new one says something new, without copying their wording or shape.\n\n"""
 
+# shuffle: the example lines in a fresh order — Claude ignores temperature, so the same chat got the same status word
+# for word
 def rocky_prompt(bot_name, shuffle=False):
     prompt = ROCKY.format(bot=bot_name)
     if ROCKY_BODY:
@@ -772,16 +244,10 @@ def clean_llm(text, bot_name):
 def text_of(content):  # a message's content: a string, a list of blocks, or nothing (a tool call's turn)
     return content if isinstance(content, str) else "".join(b.get("text", "") for b in content or [])
 
-# The LLM's answer to messages. Costs go on the trace like Jev's.
-async def llm(name, messages, max_tokens=LLM_MAX_TOKENS):
-    message = await llm_message(name, messages, max_tokens)
-    return (message or {}).get("content") or ""
-
 # A request and its whole answer: the message, with its tool calls and reasoning if there are any — or None if there
-# was none. tools and reasoning: as OpenRouter takes them, for rocky_harness.
-async def llm_message(name, messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning=None):
-    spec = LLMS[name]
-    body = {"model": spec["id"], "messages": messages, "max_tokens": max_tokens, "temperature": LLM_TEMPERATURE,
+# was none. tools and reasoning: as OpenRouter takes them, for rocky_harness. Its cost goes on the trace.
+async def llm_message(messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning=None):
+    body = {"model": LLM_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": LLM_TEMPERATURE,
             "frequency_penalty": LLM_FREQUENCY_PENALTY, "reasoning": reasoning or {"enabled": False},
             "usage": {"include": True}}
     if tools:
@@ -811,7 +277,7 @@ async def llm_message(name, messages, max_tokens=LLM_MAX_TOKENS, tools=None, rea
                 await asyncio.sleep(1 + 2 * attempt)
                 continue
             finally:
-                record_api_request(spec["id"], "status" if "status" in (trace.get() or {}) else "reply",
+                record_api_request(LLM_MODEL, "status" if "status" in (trace.get() or {}) else "reply",
                                    status, attempt, usage, data or {})
             if (t := trace.get()) is not None:
                 # On our own Anthropic key (OpenRouter's BYOK) OpenRouter charges nothing, up to its allowance, and
@@ -822,7 +288,7 @@ async def llm_message(name, messages, max_tokens=LLM_MAX_TOKENS, tools=None, rea
                     t["byok_cost"] = t.get("byok_cost", 0) + byok
                 t["requests"] += 1
             # Exact input/output counts and cache reads returned by OpenRouter.
-            note(llm_window=spec["window"], llm_prompt_tokens=usage.get("prompt_tokens"),
+            note(llm_window=LLM_WINDOW, llm_prompt_tokens=usage.get("prompt_tokens"),
                  llm_completion_tokens=usage.get("completion_tokens"),
                  llm_cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
                  llm_prompt_chars=sum(len(text_of(m.get("content"))) for m in messages))
@@ -830,55 +296,30 @@ async def llm_message(name, messages, max_tokens=LLM_MAX_TOKENS, tools=None, rea
             choice = data["choices"][0]
             if reasons := {choice.get("finish_reason"), choice.get("native_finish_reason")} & REFUSALS:
                 # Otherwise just an empty reply. The reason only, never what it said.
-                log.warning(f"LLM {name} refused ({', '.join(sorted(reasons))}) via {data.get('provider')}, "
+                log.warning(f"LLM refused ({', '.join(sorted(reasons))}) via {data.get('provider')}, "
                             f"generation {data.get('id')}")
             if choice.get("finish_reason") == "length" and tools:  # its tool calls are cut off where it stopped
-                log.warning(f"LLM {name} ran out of tokens with tools: {str(choice['message'])[:300]}")
+                log.warning(f"LLM ran out of tokens with tools: {str(choice['message'])[:300]}")
                 note(llm_cut_off=True)
             return choice["message"]
     return None
 
-async def llm_status(name, bot_name, start, chat=""):
-    spec = LLMS[name]
+# A new status, starting with start's words, about chat — or None if the request failed
+async def llm_status(bot_name, start, chat=""):
     opener = render(start)
     ask = ((LLM_STATUS_RECENT.format(bot=bot_name, statuses="\n".join(recent_statuses)) if recent_statuses else "")
            + (f"Recent chat in the server:\n{chat}\n\n" if chat else "")
            + LLM_STATUS.format(bot=bot_name, start=opener))
-    note(transcript=ask, llm=name, llm_model=spec["id"], llm_chat_chars=len(chat))
-    text = await llm(name, [{"role": "system", "content": rocky_prompt(bot_name, spec.get("shuffle"))},
-                            {"role": "user", "content": ask}])
+    note(transcript=ask, llm="rocky", llm_model=LLM_MODEL, llm_chat_chars=len(chat))
+    message = await llm_message([{"role": "system", "content": rocky_prompt(bot_name, shuffle=True)},
+                                 {"role": "user", "content": ask}])
+    text = (message or {}).get("content") or ""
     mood = " ".join(clean_llm(text, bot_name).split())  # one line
     if not mood:
         return None
     if not mood.lower().startswith(opener.lower()):
         mood = f"{opener} {mood[0].lower()}{mood[1:]}"
     return mood[:128]  # Discord's custom status limit
-
-# Which model writes: "jev" or one of LLMS. Kept in MODEL_PATH (gitignored), so a restart keeps what !model chose.
-MODEL_PATH = Path(__file__).parent / "model.json"
-
-def load_model():
-    try:
-        name = json.loads(MODEL_PATH.read_text())["model"]
-    except FileNotFoundError:
-        return "jev"
-    except Exception as e:
-        log.warning(f"Loading {MODEL_PATH.name} failed: {e}")
-        return "jev"
-    if name != "jev" and name not in LLMS:
-        log.warning(f"{MODEL_PATH.name}: unknown model {name!r}, using jev")
-        return "jev"
-    return name
-
-def save_model(name):
-    try:
-        MODEL_PATH.write_text(json.dumps({"model": name}) + "\n")
-    except OSError as e:
-        log.warning(f"Writing {MODEL_PATH.name} failed: {e}")
-
-model_name = load_model()
-log.info(f"Model: {model_name}")
-
 
 # DMs: only from the Discord user IDs in dm_users.txt (gitignored, one per line, "#" comments) — every reply costs
 # credit, and nobody else sees what's said in private. Restart the bot to pick up changes.
@@ -1063,7 +504,6 @@ def strip_mention(m):
 
 # Links, e.g. a GIF from Discord's picker (https://klipy.com/gifs/azumanga-daioh-sakai) — shown as a tag with the
 # embed's title (a tweet's has none, so its author and the start of its text), or the link's site and path words while there's no embed.
-# Raw, "https" went into the vocab, and jev picked it ("Yeah yes https https too is").
 LINK = re.compile(r"<?(https?://[^\s<>]+)>?")
 GIF_HOSTS = {"klipy.com", "tenor.com", "giphy.com"}
 SECOND_LEVEL = {"co", "com", "org", "net", "gov", "ac"}
@@ -1116,9 +556,8 @@ def attachment_tag(a):
     kind = (a.content_type or "").split("/")[0]
     return {"image": "[photo]", "video": "[video]", "audio": "[audio]"}.get(kind, "[file]")
 
-# "@jev !nocontext ..." opens a thread on the message, answered there with no history in view — and for Rocky, none of
-# its memories (open_thread). Taken out of the text, so jev never sees it, and "nocontext" never reaches the vocab from
-# the message or, later, from the history.
+# "@jev !nocontext ..." opens a thread on the message, answered there with no history in view and none of Rocky's
+# memories (open_thread). Taken out of the text, so jev never sees it, in the message or, later, in the history.
 NO_CONTEXT = re.compile(r"(?<!\S)!nocontext(?!\S)[ \t]*", re.IGNORECASE)
 # The link back that jev's replies in side conversations (before threads) ended with is UI, never model context.
 SIDE_LINK = re.compile(r" \[↳(?: thread)?\]\(https://discord\.com/channels/(?:@me|\d+)/\d+/\d+\)$")
@@ -1148,11 +587,6 @@ def message_text(m):
     tags += [attachment_tag(a) for a in m.attachments] + [f"[sticker: {s.name}]" for s in m.stickers]
     return " ".join([text.strip(), *tags]).strip()
 
-# The message of jev's that m is a Discord reply to, if any
-def replied_to_bot(m):
-    r = m.reference and m.reference.resolved
-    return r if isinstance(r, discord.Message) and r.author.id == bot.user.id else None
-
 def should_respond(m):
     if m.author.bot: return False
     if m.guild is None: return m.author.id in DM_USERS  # in a DM, every message is to jev
@@ -1172,16 +606,11 @@ def should_respond(m):
 # channel_history is in memory, so rebuild it from Discord the first time a channel talks to jev after a restart
 history_loaded: dict[int, asyncio.Task] = {}
 
-# !why on its own in a message, and !model with or without a model's name — the command, or None
-COMMANDS = {"!why": 0, "!model": 1}  # the most words each takes after it
-
+# !why on its own in a message — the command, or None
 def command(m):
     if m.author.bot:
         return None
-    c = strip_mention(m).lower().split()
-    if c and c[0] in COMMANDS and len(c) - 1 <= COMMANDS[c[0]]:
-        return c[0]
-    return None
+    return "!why" if strip_mention(m).lower().split() == ["!why"] else None
 
 # m as a history entry, or None for messages that never go in one (jev itself, empty ones, and
 # commands — often a reply to jev, so after a restart one came back as a message jev never answered)
@@ -1200,7 +629,7 @@ def history_entry(m):
     return entry
 
 
-# IDs stay beside the readable transcript, never in the model's vocabulary. Discord has already resolved these
+# IDs stay beside the readable transcript. Discord has already resolved these
 # users, so no server-wide member search or extra network request is needed.
 def message_users(m, author_name=None):
     # mentions can also contain the author of a pinged reply, whose name isn't written in the transcript.
@@ -1401,13 +830,13 @@ async def load_history(first):
     found = history_entries(scanned, known)
     # all at once: someone is waiting on the reply this history is for
     await asyncio.gather(*(attach_reactions(entry, r) for entry, r in found if r))
-    channel_history[ch] = kept(sorted(channel_history[ch] + [entry for entry, _ in found], key=lambda e: e["at"]), ch)
+    channel_history[ch] = kept(sorted(channel_history[ch] + [entry for entry, _ in found], key=lambda e: e["at"]))
     log.info(f"Loaded {len(channel_history[ch])} history entries for {ch}")
 
 @bot.event
 async def on_ready():
     global waking
-    log.info(f"jev online as {bot.user} | vocab {len(BASE_VOCAB)} | {NEXT_WORD!r}")
+    log.info(f"jev online as {bot.user}")
     waking = True
     # Idle while it catches up on what it missed (~20s, slow to answer meanwhile), then online with its status — a
     # reconnect starts over without it, so the latest is put back
@@ -1426,18 +855,17 @@ async def on_ready():
     if STATUS_EVERY and not update_status.is_running():
         update_status.start()
 
-# A new custom status for jev, shown in every server and on its profile. The starts take turns, and every other
-# status has recent chat in view (and its words in the vocab) — so it can say what people said, anywhere jev is.
-# 3 starts, alternating chat: each start gets a turn with and without it. An LLM gets the chat every time: without
-# it, it wrote the same few things again and again.
+# A new custom status for jev, shown in every server and on its profile. The starts take turns, and every status has
+# recent chat in view, so it can say what people said, anywhere jev is: without it, it wrote the same few things again
+# and again.
 # The latest is kept in STATUS_PATH, so a restart shows it again instead of paying for a new one, and the next
-# comes when it's due — with the next start, not "I feel" every time. The few before it are kept there too, for an LLM
-# to see what it already said.
+# comes when it's due — with the next start, not "I feel" every time. The few before it are kept there too, for it to
+# see what it already said.
 # One is only made once someone has said something in a server since the last (or since jev started), so a quiet
 # night doesn't cost anything or fill STATUS_CHANNEL with statuses talking to nobody — once one is due, the next
 # message brings it. The loop checks every minute, so a new STATUS_EVERY from /settings counts straight away.
 STATUS_PATH = Path(__file__).parent / "status.json"
-status_turn = 0      # which start and chat the next status gets
+status_turn = 0      # which start the next status gets
 status_at = None     # when the kept one was made
 recent_statuses = [] # the last STATUS_RECENT, oldest first, the kept one last
 tried_at = None      # when the latest was made or tried for — the next is due STATUS_EVERY minutes after
@@ -1485,9 +913,8 @@ async def update_status():
     try:
         async with gen_lock:  # after any reply in progress, not alongside it
             n, status_turn = status_turn, status_turn + 1
-            chat = recent_chat() if n % 2 or model_name != "jev" else ""  # an LLM has nothing else to go on
-            mood = await generate_filtered_status(bot_name, STATUS_STARTS[n % len(STATUS_STARTS)], chat)
-        if not mood:  # no acceptable candidate, or the API didn't answer — keep the old status
+            mood = await llm_status(bot_name, STATUS_STARTS[n % len(STATUS_STARTS)], recent_chat())
+        if not mood:  # the API didn't answer — keep the old status
             heard = True
             return
         status = discord.CustomActivity(name=mood)
@@ -1566,13 +993,13 @@ async def on_message(m):
     # starts a thread of its own
     if rh.has_log(m.channel.id) and not no_context(m):
         rh.observe(m)
-    if cmd := command(m):
+    if command(m):
         if not stopping.is_set():
-            await {"!why": why, "!model": model_command}[cmd](m)
+            await why(m)
         return
     if not should_respond(m):
         # Not for jev, but part of the conversation it might be asked about
-        if HISTORY_CHATTER and (entry := history_entry(m)):
+        if entry := history_entry(m):
             add_history(m.channel.id, entry)
         return
     if stopping.is_set():
@@ -1604,8 +1031,9 @@ async def on_message_edit(before, after):
 
 
 # !why: what jev weighed for one of its answers, from the logs — the reply the !why is a Discord reply to (or the
-# message it reacted to), or on its own jev's latest answer in the channel: why_chart's chart of Jev's words or emoji,
-# or for an LLM's reply a line saying there's nothing to chart. Costs nothing: no API calls.
+# message it reacted to), or on its own jev's latest answer in the channel: for an answer of Jev's, in old logs,
+# why_chart's chart of its words or emoji, and for Rocky's a line saying there's nothing to chart. Costs nothing: no
+# API calls.
 WHY_DAYS = 7  # how many days of logs it looks back through
 EXPLANATION_CACHE_ENTRIES = 100
 EXPLANATION_EXPIRY_MARGIN = 60  # seconds for Discord to send the embed and the client to load it
@@ -1682,19 +1110,13 @@ def find_trace(channel_id, target=None, has=lambda t: t.get("steps") or t.get("r
                 return t
     return None
 
-# One why_chart panel per word jev picked. Entries from before scores were logged get them from penalty() again,
-# with the history they logged. A status's words come after its start, which it was given.
+# One why_chart panel per word Jev picked. Entries from before scores were logged (2026-09-24) show the probability as
+# the score. A status's words come after its start, which it was given.
 def why_panels(t):
-    if "status" in t:
-        recent, exempt = (), ()  # generate_status() doesn't pass them
-        words = list(next((s for s in STATUS_STARTS if t["status"].startswith(render(s))), []))
-    else:
-        recent, exempt = recent_answers(t.get("history")), said_in(t["message"])
-        words = []
+    words = list(next((s for s in STATUS_STARTS if t["status"].startswith(render(s))), [])) if "status" in t else []
     panels = []
     for s in t["steps"]:
-        rows = [[w, p, rest[0] if rest else p / penalty(words, w, recent, exempt)] for w, p, *rest in s["top"]]
-        rows.sort(key=lambda r: -r[2])
+        rows = sorted(([w, p, rest[0] if rest else p] for w, p, *rest in s["top"]), key=lambda r: -r[2])
         keep = rows[:8] + [r for r in rows[8:] if r[0] == s["word"]]
         panels.append({"so_far": render(words), "picked": s["word"], "ends": s.get("ends", False),
                        "pooled": s.get("pooled", []), "rows": keep})
@@ -1715,7 +1137,10 @@ async def command_target(m):
             return False
     return target
 
-# The question check that chose between replying and reacting, and how close it came to going the other way
+# Jev's question check, which chose between replying and reacting, and how close it came to going the other way: it
+# reacted below REACT_THRESHOLD
+REACT_THRESHOLD = 0.4
+
 def asked_note(t, bot_name):
     if (asked := t.get("asked")) is None:
         return None
@@ -1871,8 +1296,8 @@ async def explain_why(channel_id, guild, target, send):
         return
     await send_explanation("why", channel_id, guild, t, send)
 
-# A turn Jev's reply-or-react check answered with a reaction, no LLM writing — !model rocky reacts by itself, and
-# may write as well, so its reactions are an LLM's like its messages
+# A turn Jev's reply-or-react check answered with a reaction, in old logs — Rocky reacts by itself, and may write as
+# well, so its reactions are its turn's like its messages
 def jev_reacted(t):
     return bool(t.get("reaction")) and not t.get("llm")
 
@@ -1887,7 +1312,7 @@ async def why_response(t, guild, bot_name):
         png = await asyncio.to_thread(why_chart.render, bot_name, said, why_panels(t), note=asked_note(t, bot_name))
         log.info(f"[WHY] chart for {t.get('reply') or t.get('status')!r}")
         return None, png, why_filename(said)
-    elif not t.get("reaction_candidates"):  # !model rocky picks its own emoji, with nothing weighed to chart
+    elif not t.get("reaction_candidates"):  # Rocky picks its own emoji, with nothing weighed to chart
         log.info(f"[WHY] reaction {t.get('reaction')}, by {t.get('llm')}")
         return f"Reacted {t.get('reaction')} to \"{t['message'][:80]}\" — {t.get('llm') or 'it'} picked it itself", None, None
     elif isinstance(t["reaction_candidates"][0], str):
@@ -1907,11 +1332,10 @@ async def why_response(t, guild, bot_name):
         return None, png, why_filename(t["message"], reacted=True)
 
 
-# Context: the transcript jev had in view for one of its answers, from the logs — found like !why's. For a reply,
-# the one it picked words from; for a reaction, the question check's, which chose reacting (messages to jev marked
-# "@jev", no past reactions); for a status, its diary entry, with any recent chat. Entries logged without one (out
-# of credit, or from before asked_transcript) get it from their history again — which is logged at the end, so can
-# show a reaction or reply that came in meanwhile.
+# Context: the transcript jev had in view for one of its answers, from the logs — found like !why's. For Rocky's turn,
+# the end of its log; for a status, what it was asked, with the recent chat. In old logs, for Jev's reply the transcript
+# it picked words from, and for its reaction the question check's, which chose reacting. An answer logged without one
+# (out of credit, say) has none to show.
 CONTEXT_LIMIT = 2000  # Discord's message length — a longer transcript goes as a file
 
 # A code block in someone's message would open or end ours
@@ -1919,18 +1343,12 @@ def unfence(text):
     return text.replace("```", "`\u200b``")
 
 def logged_context(t):
-    if "status" in t:
-        return t["transcript"]
-    if jev_reacted(t):
-        return t.get("asked_transcript") or transcript(t["message"], t["author"], t["bot_name"], t["history"], [],
-                                                       reactions=False, marked=True)
-    return t.get("transcript") or transcript(t["message"], t["author"], t["bot_name"], t["history"], [])
+    return t.get("asked_transcript") if jev_reacted(t) else t.get("transcript")
 
 # The Context action's answer for `target`, through send(content=None, file=None, embed=None)
 async def explain_context(channel_id, guild, target, send):
     t = await asyncio.to_thread(find_trace, channel_id, target,
-                                lambda t: "history" in t and (t.get("reply") or t.get("reaction"))
-                                or t.get("status") and "transcript" in t)
+                                lambda t: (t.get("reply") or t.get("reaction") or t.get("status")) and logged_context(t))
     if t is None:
         await send("Nothing logged for that")
         return
@@ -1952,7 +1370,7 @@ def model_label(t):
         return "None (out of credit)"
     if jev_reacted(t):
         return "Jev"
-    # Preserve the model version recorded at generation time, even after !model or a config change.
+    # Preserve the model version recorded at generation time, even after a config change.
     return t.get("llm_model") or (t.get("llm") or "jev").title()
 
 
@@ -2045,6 +1463,7 @@ def stats_response(t):
     return embed
 
 
+# decision and status_check: Jev's question check and status judge, in old logs
 REQUEST_PURPOSES = {"decision": "Check whether to reply or react", "reply": "Write the reply",
                     "status": "Write the status", "status_check": "Check the status makes sense"}
 
@@ -2063,8 +1482,7 @@ def diagnostics_response(t):
             key = call["purpose"], call["model"], call["is_byok"]
             groups.setdefault(key, []).append(call)
         for (purpose, model, byok), group in groups.items():
-            name = "Jev" if model == MODEL else next((alias.title() for alias, spec in LLMS.items()
-                                                     if spec["id"] == model), model)
+            name = {JEV_MODEL: "Jev", LLM_MODEL: "Rocky"}.get(model, model)
             billing = ("Anthropic key" if model.startswith("anthropic/") else "provider key") if byok else "OpenRouter"
             costs = [None if c["router_cost"] is None or c["key_cost"] is None
                      else c["router_cost"] + c["key_cost"] for c in group]
@@ -2089,7 +1507,7 @@ def diagnostics_response(t):
             embed.add_field(name="Retries", value=f"{retries:,} HTTP retries · {generations:,} extra generations",
                             inline=False)
     else:
-        model = MODEL if not t.get("llm") or jev_reacted(t) else t.get("llm_model")
+        model = JEV_MODEL if not t.get("llm") or jev_reacted(t) else t.get("llm_model")
         embed.add_field(name="Model ID", value=f"`{model}`" if model else "Not recorded", inline=False)
     if (cost := t.get("cost")) is not None:
         byok = t.get("byok_cost", 0)
@@ -2199,24 +1617,6 @@ async def settings_command(interaction: discord.Interaction):
     await interaction.response.send_message(view=SettingsView(await is_admin(interaction.user)), ephemeral=True)
 
 
-# !model: which model writes the replies and statuses, or with a name, switch to it — for everyone, and kept
-# across restarts
-async def model_command(m):
-    global model_name
-    names = ["jev", *LLMS]
-    args = strip_mention(m).lower().split()[1:]
-    if not args:
-        text = f"Writing with **{model_name}**. `!model <name>` switches: {', '.join(names)}"
-    elif args[0] not in names:
-        text = f"No model called {args[0]!r} — {', '.join(names)}"
-    else:
-        model_name = args[0]
-        save_model(model_name)
-        text = f"Now writing with **{model_name}**" + (f" ({LLMS[model_name]['id']})" if model_name in LLMS else "")
-        log.info(f"[MODEL] {m.author} switched to {model_name}")
-    await m.reply(text, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
-
-
 # Messages jev has taken on, so each is answered once: at startup, catch_up() can find one on_message is already
 # answering (its reply not sent yet, so it looks missed), or the other way round. The latest only — catch_up() looks
 # back CATCH_UP_WINDOW minutes.
@@ -2246,7 +1646,7 @@ async def respond_traced(m, **extra):
     trace.set(t)
     start = time.monotonic()
     try:
-        await handle(m, c)
+        await handle(m)
     finally:
         t["seconds"] = round(time.monotonic() - start, 1)
         write_trace(t)
@@ -2276,7 +1676,7 @@ def action_lines(shown):
             lines.append(f"-# {'🧠 remembered' if kind == 'remember' else '🗑️ forgot'}: {about} {fact}")
     return lines
 
-# !model rocky: Rocky takes its turn in the channel's log (rocky_harness) — its message, its reactions on any message
+# Rocky takes its turn in the channel's log (rocky_harness) — its message, its reactions on any message
 # there, and what it remembers. entries: the channel's history, for what the log hasn't seen (the first time, and
 # after a restart). where: the channel it answers in, if not m's — the thread m opened; chat: the log, if not where's.
 async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
@@ -2289,9 +1689,9 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
     if waking is None:  # nothing in it to answer: a bare !nocontext in a DM
         return
     async with gen_lock:  # no typing while it decides — it may only react (take_turn)
-        turn = await rh.take_turn(chat, waking, "rocky", bot_name, typing=where.typing)
+        turn = await rh.take_turn(chat, waking, bot_name, typing=where.typing)
     rh.jump(chat)
-    note(llm="rocky", llm_model=LLMS["rocky"]["id"], transcript=rh.readable(chat, bot_name, last=40),
+    note(llm="rocky", llm_model=LLM_MODEL, transcript=rh.readable(chat, bot_name, last=40),
          llm_messages=sum(e["type"] == "message" for e in chat.events), harness_requests=turn.requests,
          memory_kept=[list(k) for k in turn.kept],
          # a look's pictures stay in Rocky's log, and are only counted here: logs/ keeps every day
@@ -2345,7 +1745,7 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
     entry["reply_id"], entry["reply_at"] = sent.id, sent.created_at
     entry["reply_users"] = {k: v for x in [sent, *more] for k, v in message_users(x).items()}
 
-# Jev's answer to m: a Discord reply, or in the thread m opened, the next message there
+# The answer to m: a Discord reply, or in the thread m opened, the next message there
 async def post_answer(m, where, content, allowed=None):
     if where is not m.channel:
         try:
@@ -2397,7 +1797,7 @@ async def earlier_history(channel, entries):
     log.info(f"[ROCKY] #{getattr(channel, 'name', channel.id)} log starts {len(found)} messages further back")
     return found
 
-async def handle(m, c):
+async def handle(m):
     if m.guild is None:
         dm_channels.add(m.channel.id)  # before its history loads, so a status made meanwhile can't show it
     # A !nocontext message is answered in its own thread, with no history — once in it, it's a channel like any other
@@ -2405,7 +1805,7 @@ async def handle(m, c):
     if apart:
         thread = await open_thread(m)
         where = thread or m.channel
-        h, entry = [], history_entry(m)
+        entry = history_entry(m)
         note(no_context=True)
         if thread:
             channel_history[thread.id].append(entry)
@@ -2417,71 +1817,29 @@ async def handle(m, c):
         if m.channel.id not in history_loaded:
             history_loaded[m.channel.id] = asyncio.create_task(load_history(m))
         await history_loaded[m.channel.id]
-        # Snapshot before waiting on gen_lock — messages that arrive meanwhile must not shift this one's history
         entry = add_history(m.channel.id, history_entry(m))
-        h = shown(channel_history[m.channel.id][:-1])
         if rh.no_memories(m.channel):
             note(no_context=True)
-    entry["pending"] = True
-    # Server nickname, so the transcript uses the name people call the bot by
+    # Server nickname, so Rocky goes by the name people call the bot by
     bot_name = (m.guild.me if m.guild else bot.user).display_name
-    # The reply of jev's someone is answering, if it isn't already shown under the message it answered
-    if not apart and (r := replied_to_bot(m)) and r.content and all(e.get("reply_id") != r.id for e in h):
-        reply_entry = {"role": "assistant", "name": bot_name, "content": message_text(r), "at": r.created_at,
-                       "users": message_users(r)}
-        await attach_reactions(reply_entry, r, prefix="")
-        h.append(reply_entry)
-    note(bot_name=bot_name, history=h)
+    note(bot_name=bot_name)
     try:
-        # Kept out of history: jev would see the link in its transcript and start talking about it
         if has_credit is False:
             gif = random.choice(NO_MONEY)
             note(reply=gif)
             log.info(f"[OUT] out of credit: {gif}")
             await post_answer(m, where, gif)
-            return
-        if model_name == "rocky":
-            if apart:
-                await rocky_turn(m, entry, bot_name, [], where, None if thread else rh.apart(thread_name(m), m.channel.id))
-            else:
-                await rocky_turn(m, entry, bot_name, channel_history[m.channel.id])
-            return
-        # Decided before typing() — a reaction sends no message, so the typing indicator would linger
-        emoji = emoji_vocabulary(m.guild)
-        if reaction := await choose_reaction(c, m.author.display_name, bot_name, emoji, history=h):
-            try:
-                await m.add_reaction(emoji[reaction])
-                entry["reaction"] = reaction  # kept on its message, so it stays in order and doesn't use a history slot
-                note(reaction=reaction)
-                log.info(f"[REACT] {reaction} (${trace.get()['cost']:.5f})")
-                return
-            except discord.HTTPException as e:  # no Add Reactions permission, or an emoji Discord doesn't know
-                log.warning(f"React {reaction} failed, replying instead: {e}")
-        async with where.typing():
-            async with gen_lock:
-                r = await generate_reply(c, m.author.display_name, bot_name, history=h)
-        if has_credit is False and r == "...":  # ran out before the first word
-            r = random.choice(NO_MONEY)
-        note(reply=r)
-        log.info(f"[OUT] {r} (${trace.get()['cost']:.5f})")
-        content, allowed = r, discord.AllowedMentions.none()  # Jev's never ping
-        note(sent=content)  # !why matches the actual Discord text, while reply/tokens keep what the model wrote
-        sent = await post_answer(m, where, content, allowed)
-        note(reply_id=sent.id)  # for !why
-        if thread or not apart:
-            rh.spoke_elsewhere(where, message_text(sent), sent)
-        if r not in NO_MONEY:
-            entry["reply"], entry["reply_id"], entry["reply_at"] = message_text(sent), sent.id, sent.created_at
-            entry["reply_users"] = message_users(sent)
+        elif apart:
+            await rocky_turn(m, entry, bot_name, [], where, None if thread else rh.apart(thread_name(m), m.channel.id))
+        else:
+            await rocky_turn(m, entry, bot_name, channel_history[m.channel.id])
     except Exception as e:
         log.error(f"Error: {e}", exc_info=True)
         note(error=repr(e))
         try: await post_answer(m, where, "...")
         except: pass
-    finally:
-        entry.pop("pending", None)
 
-# Keeps people's reactions to jev's replies current in the history — a reply shown later carries them
+# Keeps people's reactions to jev's replies current in the history, so Rocky can ping who reacted
 async def on_reaction_change(p, change):
     if p.user_id == bot.user.id:
         return
