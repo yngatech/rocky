@@ -53,21 +53,19 @@ Tag the bot or its role, mention its name in plain text, or reply to one of its 
 
 Put `!nocontext` in a message to the bot (`@rocky !nocontext what's your favourite colour?`) and it opens a thread on that message, named from it, and answers there with none of the channel's history in view. Every message in the thread is to the bot, no tag needed, and nothing said there reaches the channel's history, Rocky's log of it, or statuses. If the message is a Discord reply, what it replies to isn't shown. Rocky's log of the thread has no memories: no `<memories>` block, no `remember` or `forget`, and its prompt says nothing said there is kept. `!nocontext` again inside the thread just carries on. In a DM, or when the thread can't be opened, it answers that message on its own, with nothing before it.
 
-Rocky can ping people by writing `@` and their full display name (`@Pip Meadow, ...`). The name must end at punctuation, a line break or the end of the reply, so `@Moss, ...` pings Moss but `@Moss knows` stays text. Names match regardless of case; bare names, ambiguous names, code and URLs stay text. Only people in its context can be pinged: speakers, mentioned users and reactors. Roles, `@everyone`, `@here`, raw IDs and automatic reply pings stay off, and statuses and the Why/Context answers never ping anyone.
+Rocky can ping people by writing `@` and their full display name (`@Pip Meadow, ...`). The name must end at punctuation, a line break or the end of the reply, so `@Moss, ...` pings Moss but `@Moss knows` stays text. Names match regardless of case; bare names, ambiguous names, code and URLs stay text. Only people in its context can be pinged: speakers, mentioned users and reactors. Roles, `@everyone`, `@here`, raw IDs and automatic reply pings stay off, and statuses and the Context answers never ping anyone.
 
 ## Commands
 
 - `/settings` shows how often a new status is made (`STATUS_EVERY`) and Rocky's context window (`LOG_TOKENS`), visible only to you. Admins get a menu under each: a status every 1 to 24 hours, or off, and a window of 25K to 90K tokens (past 100K Haiku charges 5× for the whole prompt). A smaller window takes effect after Rocky's next turn, when the oldest half of its log goes; a much smaller one can take a few turns, halving each time. Kept in `settings.json` (gitignored). The menus stop working after 15 minutes or a restart. Works in a DM too.
-- `!why` charts what Jev weighed for a reply: each word's candidates, how likely the model thought each was, and their scores after its repeat penalties, or for a reaction, the emoji it weighed. On its own it answers for the latest reply in the channel, and as a Discord reply, for that one. Only Jev's answers have a chart, from the logs it reads (the last `WHY_DAYS`, 7): for Rocky's there's nothing to chart, since Haiku doesn't say how likely its words were.
 
 Right-click (long-press on mobile) a reply, a message the bot reacted to, or a posted status and pick from **Apps** for answers only you see:
 
-- **Why**: `!why` for that message.
 - **Context**: what the bot had in view: the end of Rocky's log of the channel, its turn included, or what a status was asked, with the model and message count, and for an LLM turn its output tokens, input against the model's window, and cached versus uncached input, each with a text bar. A long transcript is attached as `context.txt`.
 - **Stats**: the model, total recorded cost in USD (every logged attempt, including costs billed to a linked provider key), and context usage of the final request.
 - **Diagnostics**: request counts and purposes, elapsed time, model IDs, billing, cache and output details, retries, and why an LLM request stopped early (a refusal is also logged as a warning with its reason, provider and generation id, never what was said).
 
-These all read `logs/` (Why looks back `WHY_DAYS`, 7) and make no model requests. Everyone who can use apps in a channel sees the actions; a server can limit them in **Server Settings → Integrations**. The bot registers them each time it starts, so an open Discord client may need reloading (Ctrl+R) the first time. Why, Stats and Diagnostics share an in-memory cache of up to `EXPLANATION_CACHE_ENTRIES` (100) answers; charts are uploaded once and their signed Discord URLs reused until `EXPLANATION_EXPIRY_MARGIN` (60) seconds before they expire.
+These all read the last `LOG_DAYS` (7) of `logs/`, Jev's entries from before Rocky included, and make no model requests. Everyone who can use apps in a channel sees the actions; a server can limit them in **Server Settings → Integrations**. The bot registers them each time it starts, so an open Discord client may need reloading (Ctrl+R) the first time.
 
 ## Rocky
 
@@ -138,7 +136,7 @@ Tests run offline:
 uv run --with-requirements requirements.txt python -m unittest
 ```
 
-They use synthetic logs, Discord messages and API results: `test_harness.py` for Rocky's log and turns, `test_llm.py` for its requests and statuses, `test_mentions.py` for routing, history, catch-up and pings, `test_explanations.py` for Why, Context, Stats and Diagnostics, `test_status.py`, `test_settings.py`, `test_viewer.py`, `test_reactions.py` and `test_replay.py`.
+They use synthetic logs, Discord messages and API results: `test_harness.py` for Rocky's log and turns, `test_llm.py` for its requests and statuses, `test_mentions.py` for routing, history, catch-up and pings, `test_explanations.py` for Context, Stats and Diagnostics, `test_status.py`, `test_settings.py`, `test_viewer.py`, `test_reactions.py` and `test_replay.py`.
 
 `rocky_replay.py` replays messages to Rocky on a copy of the live channel log, its memories, `rocky_lines.txt` and `rocky_body.txt`, and prints its tool calls and results, reactions and what it said. Nothing is written back, and its thinking isn't printed. In a worktree it reads the files of the checkout its `.env` links to.
 

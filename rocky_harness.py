@@ -814,14 +814,14 @@ def replied_outside(m):
         return None
     return {"author": "you" if r.author.id == j.bot.user.id else r.author.display_name, "text": snippet(text, 200)}
 
-# A message in the channel, as it arrives: people's and other apps' — not Rocky's own (its turns add those), commands,
-# or !nocontext messages (jev_bot keeps those out of the channel's). Returns its event, or None. log: m's channel's,
+# A message in the channel, as it arrives: people's and other apps' — not Rocky's own (its turns add those), or
+# !nocontext messages (jev_bot keeps those out of the channel's). Returns its event, or None. log: m's channel's,
 # unless it's another's — a !nocontext message starts its thread's.
 def observe(m, log=None):
     log = log or log_for(m.channel)
     if (n := log.ids.get(str(m.id))) is not None:
         return next((e for e in log.events if e.get("n") == n), None)
-    if m.author.id == j.bot.user.id or j.command(m) or not (text := j.message_text(m)):
+    if m.author.id == j.bot.user.id or not (text := j.message_text(m)):
         return None
     reply_to = you_said = older = None
     if m.reference and m.reference.message_id:

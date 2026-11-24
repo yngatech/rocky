@@ -200,13 +200,6 @@ class MentionTests(_Discord):
         m.role_mentions.append(SimpleNamespace(id=200000000000000002, name="Readers"))
         self.assertEqual(j.message_text(m), "@Testbot's friend @Friend likes @Readers")
 
-    async def test_commands_still_ignore_bot_mentions(self):
-        for mention in ("<@100000000000000001>", "<@!100000000000000001>", self.role.mention):
-            m = self.message(content=f"{mention} !why", ping=True)
-            self.assertEqual(j.command(m), "!why")
-            m.content = f"{mention}'s !why"
-            self.assertIsNone(j.command(m))
-
     async def test_discord_formatter_handles_channels_and_deleted_mentions(self):
         self.guild._resolve_channel = lambda id: SimpleNamespace(name="general") if id == 300000000000000001 else None
         m = self.message(content="<@100000000000000001> see <#300000000000000001>", ping=True)
@@ -323,14 +316,6 @@ class MentionTests(_Discord):
             await j.catch_up()
         respond.assert_not_awaited()
 
-    async def test_unpinged_diagnostic_reply_still_runs_command(self):
-        m = self.message(content="!why")
-        with patch.object(j, "why", new_callable=AsyncMock) as why, \
-                patch.object(j, "respond", new_callable=AsyncMock) as respond:
-            await j.on_message(m)
-        why.assert_awaited_once_with(m)
-        respond.assert_not_awaited()
-
     async def test_catch_up_skips_unpinged_reply_and_answers_pinged_reply(self):
         for ping in (False, True):
             with self.subTest(ping=ping):
@@ -424,8 +409,8 @@ class ActionTests(_Discord):
 
     def test_actions_are_message_context_menus(self):
         menus = {c.name: c.type for c in j.bot.tree.get_commands(type=discord.AppCommandType.message)}
-        self.assertEqual(menus, {"Why": discord.AppCommandType.message, "Context": discord.AppCommandType.message,
-                                 "Stats": discord.AppCommandType.message, "Diagnostics": discord.AppCommandType.message})
+        self.assertEqual(menus, {"Context": discord.AppCommandType.message, "Stats": discord.AppCommandType.message,
+                                 "Diagnostics": discord.AppCommandType.message})
 
     async def test_failed_registration_doesnt_stop_startup(self):
         error = discord.HTTPException(Mock(status=503, reason="Service Unavailable"), "unavailable")
@@ -521,8 +506,7 @@ class RockyHarnessTests(_Handling):
 
     async def test_rocky_speaks_reacts_and_remembers_from_the_channels_log(self):
         await j.on_message(self.said("anyone seen my keys", name="kettle", ping=False))
-        with patch.object(j, "why", AsyncMock()):
-            await j.on_message(self.said("!why", ping=False))  # a command stays out of the log
+        await j.on_message(self.said("!why", ping=False))  # no longer a command: just something said
         m = self.said("my cat is called biscuit")
         llm = AsyncMock(return_value=answer("@pip Biscuit. Good name.", [
             ("react", {"emoji": "🐱"}), ("remember", {"about": "pip", "fact": "has a cat called Biscuit"})]))
@@ -534,8 +518,8 @@ class RockyHarnessTests(_Handling):
         self.partials[m.id].add_reaction.assert_awaited_once_with("🐱")
         log = rh.logs[self.channel.id]
         people = [e for e in log.events if e["type"] == "message"]
-        self.assertEqual([(e["author"], e["text"]) for e in people][-2:],
-                         [("kettle", "anyone seen my keys"), ("pip", "@Testbot my cat is called biscuit")])
+        self.assertEqual([(e["author"], e["text"]) for e in people][-3:],
+                         [("kettle", "anyone seen my keys"), ("pip", "!why"), ("pip", "@Testbot my cat is called biscuit")])
         self.assertTrue(people[-1]["woke"])
         self.assertEqual(log.ids[str(self.sent.id)], "you")
         self.assertEqual(rh.memory("400")["facts"][0]["fact"], "has a cat called Biscuit")
@@ -814,7 +798,7 @@ class NoContextThreadTests(_Handling):
         thread.send.assert_awaited_once()
         self.assertEqual(thread.send.call_args.args[0], "Granite.")
         self.assertEqual((self.trace["no_context"], self.trace["channel_id"]), (True, thread.id))
-        # !why finds it from the message or in the thread
+        # the actions find it from the message or in the thread
         self.assertTrue(j.in_channel(self.trace, self.channel.id) and j.in_channel(self.trace, thread.id))
         # in the thread, nobody needs to tag jev, and it has the thread so far
         follow = self.said("why granite", ping=False, channel=thread)
