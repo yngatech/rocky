@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Run the bot and keep it up to date. Every --every seconds this fetches; when the branch's upstream has new commits that
-fast-forward onto a clean checkout, it pulls them. Unless they only touch files the bot never loads (CI, docs, tests, dev
-scripts), it stops the bot and replaces itself with the new run.py, which starts the bot on the new code: so a change to
-run.py takes effect too, with no service restart. If the bot exits on its own, it waits and does the same.
+fast-forward onto a clean checkout, it pulls them. Then, whenever the checkout has moved off the commit the bot started
+on, by this pull or any other, it stops the bot and replaces itself with the new run.py, which starts the bot on the new
+code: so a change to run.py takes effect too, with no service restart. It doesn't when the move only touches files the
+bot never loads (CI, docs, tests, dev scripts). If the bot exits on its own, it waits and does the same.
 
     python3 run.py                          # runs: mise exec -- uv run --with-requirements requirements.txt rocky_bot.py
     python3 run.py -- python rocky_bot.py   # or any other command
@@ -41,30 +42,33 @@ def git(*args):
                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 
+def rev(ref):
+    return git("rev-parse", ref).stdout.strip()
+
+
 def needs_restart(changed):
     return any(not any(fnmatch.fnmatch(path, pattern) for pattern in NO_RESTART) for path in changed)
 
 
-# Pull if the upstream moved and fast-forwards cleanly; returns the files that changed, empty if nothing was pulled
+# Pull if the upstream moved and fast-forwards cleanly
 def update():
     if (fetch := git("fetch", "--quiet")).returncode:
         say(f"fetch failed: {fetch.stderr.strip()}")
-        return []
-    head, upstream = git("rev-parse", "HEAD").stdout.strip(), git("rev-parse", "@{u}").stdout.strip()
+        return
+    head, upstream = rev("HEAD"), rev("@{u}")
     if not upstream or head == upstream:
-        return []
+        return
     if git("merge-base", "--is-ancestor", "HEAD", "@{u}").returncode:
         say("not updating: this checkout has commits the upstream doesn't")
-        return []
+        return
     if git("diff", "--quiet", "HEAD").returncode:
         say("not updating: this checkout has uncommitted changes")
-        return []
+        return
     if (merge := git("merge", "--ff-only", "--quiet", "@{u}")).returncode:
         say(f"not updating: {merge.stderr.strip()}")
-        return []
+        return
     log = git("log", "--format=  %h %s", f"{head}..HEAD").stdout.rstrip()
     say(f"updated {head[:7]} -> {upstream[:7]}\n{log}")
-    return git("diff", "--name-only", head, "HEAD").stdout.splitlines()
 
 
 # Run the checkout's run.py, as pulled, in this process's place: same pid, arguments and terminal. Every restart of the
@@ -96,9 +100,12 @@ def main():
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    if update():  # start on the latest code, this script included
+    # The commit the bot runs. It doesn't outlive this process: every restart stops the bot before reexec().
+    running = rev("HEAD")
+    update()  # start on the latest code, this script included
+    if rev("HEAD") != running:
         reexec()
-    say(f"starting: {' '.join(cmd)}")
+    say(f"starting on {running[:7]}: {' '.join(cmd)}")
     started = time.monotonic()
     bot = subprocess.Popen(cmd, cwd=HERE, start_new_session=True)
     next_check, restarting = started + args.every, False
@@ -106,11 +113,20 @@ def main():
         time.sleep(1)
         if time.monotonic() >= next_check:
             next_check = time.monotonic() + args.every
-            if restarting := needs_restart(changed := update()):
-                say("restarting on the new code")
-                os.kill(bot.pid, signal.SIGTERM)
-            elif changed:
-                say("not restarting: only files the bot doesn't load changed")
+            update()
+            # Whoever moved the checkout, this pull or another: restart unless it moved only files the bot never loads.
+            # Not while it has uncommitted changes, such as a rebase stopped on a conflict: they'd be what restarts.
+            if (head := rev("HEAD")) and head != running:
+                if git("diff", "--quiet", "HEAD").returncode:
+                    say("not restarting yet: this checkout has uncommitted changes")
+                    continue
+                changed = git("diff", "--name-only", "--no-renames", running, head)
+                if restarting := changed.returncode != 0 or needs_restart(changed.stdout.splitlines()):
+                    say(f"restarting on the new code: {running[:7]} -> {head[:7]}")
+                    os.kill(bot.pid, signal.SIGTERM)
+                else:
+                    say(f"not restarting: only files the bot doesn't load changed, {running[:7]} -> {head[:7]}")
+                    running = head
     try:
         bot.wait(timeout=FINISH_TIMEOUT)
     except subprocess.TimeoutExpired:
