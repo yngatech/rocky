@@ -232,6 +232,7 @@ async def llm_message(messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning
             "usage": {"include": True}}
     if tools:
         body["tools"] = tools
+    purpose = next((p for p in ("status", "warm") if p in (trace.get() or {})), "reply")
     async with aiohttp.ClientSession(headers=HEADERS) as session:
         for attempt in range(3):
             status, usage, data = "error", None, None
@@ -257,8 +258,7 @@ async def llm_message(messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning
                 await asyncio.sleep(1 + 2 * attempt)
                 continue
             finally:
-                record_api_request(LLM_MODEL, "status" if "status" in (trace.get() or {}) else "reply",
-                                   status, attempt, usage, data or {})
+                record_api_request(LLM_MODEL, purpose, status, attempt, usage, data or {})
             if (t := trace.get()) is not None:
                 # On our own Anthropic key (OpenRouter's BYOK) OpenRouter charges nothing, up to its allowance, and
                 # the request is paid from the key's credit: counted in the cost too, and apart as byok_cost
@@ -271,6 +271,7 @@ async def llm_message(messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning
             note(llm_window=LLM_WINDOW, llm_prompt_tokens=usage.get("prompt_tokens"),
                  llm_completion_tokens=usage.get("completion_tokens"),
                  llm_cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+                 llm_cache_write_tokens=(usage.get("prompt_tokens_details") or {}).get("cache_write_tokens"),
                  llm_prompt_chars=sum(len(text_of(m.get("content"))) for m in messages))
             await set_credit(True)
             choice = data["choices"][0]
@@ -278,7 +279,8 @@ async def llm_message(messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning
                 # Otherwise just an empty reply. The reason only, never what it said.
                 log.warning(f"LLM refused ({', '.join(sorted(reasons))}) via {data.get('provider')}, "
                             f"generation {data.get('id')}")
-            if choice.get("finish_reason") == "length" and tools:  # its tool calls are cut off where it stopped
+            # its tool calls are cut off where it stopped — a warm-up's are meant to be
+            if choice.get("finish_reason") == "length" and tools and purpose != "warm":
                 log.warning(f"LLM ran out of tokens with tools: {str(choice['message'])[:300]}")
                 note(llm_cut_off=True)
             return choice["message"]
@@ -825,6 +827,8 @@ async def on_ready():
     # on_ready runs again after a reconnect, so only start it the first time
     if STATUS_EVERY and not update_status.is_running():
         update_status.start()
+    if not keep_warm.is_running():
+        keep_warm.start()
 
 # A new custom status for the bot, shown in every server and on its profile. The starts take turns, and every status has
 # recent chat in view, so it can say what people said, anywhere the bot is: without it, it wrote the same few things again
@@ -902,6 +906,33 @@ async def update_status():
         heard = True
         t["error"] = repr(e)
     finally:
+        t["seconds"] = round(time.monotonic() - start, 1)
+        write_trace(t)
+
+# Rocky's prompt cache, kept warm (rocky_harness.warming): a minute a channel, so warm-ups never go together, and none
+# starts while a turn or a status holds gen_lock, or out of credit. Its request doesn't hold gen_lock, so a slow one
+# never keeps a reply waiting, and it's in `handling`, so stopping waits for it to be counted. Logged like a turn, as a
+# warm-up ("warm", no "llm"): the Rocky page and the actions only show turns. Its cost goes on the channel's next
+# turn's Stats too.
+@tasks.loop(minutes=1)
+async def keep_warm():
+    if has_credit is False or stopping.is_set() or gen_lock.locked():
+        return
+    if (chat := rh.warming(rh.clock())) is None:
+        return
+    messages = rh.warm_request(chat)  # now, before a turn can start
+    t = {"at": rh.clock().isoformat(timespec="seconds"), "warm": True, "channel": chat.channel,
+         "channel_id": chat.channel_id, "cost": 0.0, "requests": 0}
+    trace.set(t)
+    start = time.monotonic()
+    handling.add(task := asyncio.create_task(rh.warm(chat, messages)))
+    try:
+        await task
+    except Exception as e:  # an uncaught error would end the loop
+        log.error(f"Warm-up error: {e}", exc_info=True)
+        t["error"] = repr(e)
+    finally:
+        handling.discard(task)
         t["seconds"] = round(time.monotonic() - start, 1)
         write_trace(t)
 
@@ -1145,6 +1176,9 @@ def stats_response(t):
     if (count := t.get("llm_messages")) is not None:
         usage += f"\n{count:,} chat messages"
     embed.add_field(name="Context", value=usage, inline=False)
+    if warm_ups := t.get("warm_ups"):
+        embed.add_field(name="Kept warm", value=f"{warm_ups:,} warm-up{'s' if warm_ups != 1 else ''} since the turn "
+                                                f"before · {money(t.get('warm_cost'))}", inline=False)
     return embed
 
 

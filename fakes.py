@@ -2,6 +2,7 @@
 answers and Rocky's state. Not a test module itself: unittest only collects test_*.py.
 """
 
+import asyncio
 import contextlib
 import itertools
 import json
@@ -39,7 +40,7 @@ def isolate_rocky(case, here):
     patch_all(case, [(rh, "LOG_DIR", Path(here) / "rocky_logs"), (rh, "MEMORY_PATH", Path(here) / "rocky_memories.json"),
                      (rh, "logs", {}), (rh, "log_saves", {}), (rh, "memories", {}), (rh, "memories_loaded", True),
                      (rh, "memories_save", None), (rh, "head", lambda: None),
-                     (rh, "saved_memoryless", {})])
+                     (rh, "saved_memoryless", {}), (rh, "warm_loaded", False)])
 
 
 def answer(text="", calls=(), reasoning=None):
@@ -66,12 +67,16 @@ def session():
 
 @contextlib.contextmanager
 def openrouter(*replies):
-    # OpenRouter answering each request with the next (status, body), the last one again once they run out. Yields the
-    # session, to see what was asked, with set_credit on it; retries don't wait.
+    # OpenRouter answering each request with the next (status, body), the last one again once they run out — or a
+    # function of the request's body that gives one, or a coroutine that does when it's done. Yields the session, to
+    # see what was asked, with set_credit on it; retries don't wait.
     replies = list(replies)
 
-    def reply():
-        status, body = replies.pop(0) if len(replies) > 1 else replies[0]
+    async def reply():
+        r = replies.pop(0) if len(replies) > 1 else replies[0]
+        if callable(r):
+            r = r(s.post.call_args.kwargs["json"])
+        status, body = await r if asyncio.iscoroutine(r) else r
         return SimpleNamespace(status=status, json=AsyncMock(return_value=body),
                                text=AsyncMock(return_value=json.dumps(body)))
 

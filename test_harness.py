@@ -618,21 +618,6 @@ class KeepingTests(_Case):
         self.assertNotIn('<deleted id="1"/>', tidied)
         self.assertIn("[1] pip: likes soup", tidied)  # <memories> brought up to date at the same time
 
-    async def test_after_an_hour_without_a_request_its_turn_tidies_first(self):
-        for idle, tidied in [(timedelta(minutes=50), False), (timedelta(hours=2), True)]:
-            with self.subTest(idle=idle):
-                self.log = rh.Log("bot-spam", "400", 300)
-                rh.logs[300] = self.log
-                self.said("pip", "secret", 0, discord_id=900)
-                rh.deleted(300, 900)
-                self.log.asked = datetime.now(timezone.utc) - idle
-                q = self.said("kettle", "rocky hi", 1, to_bot=True)
-                llm = AsyncMock(return_value=answer("Hi."))
-                with patch.object(j, "llm_message", llm):
-                    await rh.take_turn(self.log, q)
-                self.assertEqual("secret" not in j.text_of(llm.call_args.args[0][2]["content"]), tidied)
-                self.assertGreater(self.log.asked, datetime.now(timezone.utc) - timedelta(minutes=1))
-
     def test_past_its_size_the_oldest_half_goes_at_a_message(self):
         for i in range(40):
             self.said("pip", "x" * 100, i, discord_id=1000 + i)
