@@ -550,6 +550,25 @@ class RockyHarnessTests(_Handling):
         # a reply with its ping off isn't to Rocky, but it's still shown as answering its message
         self.assertEqual((asked["reply_to"], asked["you_said"], asked["to_bot"]), ("you", "@pip Biscuit. Good name.", False))
 
+    async def test_after_a_restart_what_happens_before_anything_is_said_still_reaches_its_log(self):
+        said = self.said("my password is hunter2", ping=False)
+        await j.on_message(said)
+        with patch.object(j, "llm_message", AsyncMock(return_value=answer("Hunter. Is name."))):
+            await j.handle(self.said("rocky what's a good password"))
+        rh.flush()
+        rh.logs.clear()  # a restart, and nothing said there since
+        with patch.object(j.bot, "get_channel", lambda i: None):  # not cached yet either
+            await j.on_raw_message_delete(SimpleNamespace(channel_id=self.channel.id, message_id=said.id))
+            await j.on_raw_reaction_add(SimpleNamespace(channel_id=self.channel.id, message_id=self.sent.id, guild_id=400,
+                                                        user_id=501, emoji="😂", member=Mock(spec=discord.Member, id=501,
+                                                        display_name="Moss", guild=self.guild)))
+        llm = AsyncMock(return_value=answer("Is good."))
+        with patch.object(j, "llm_message", llm):
+            await j.handle(self.said("thanks rocky"))
+        latest = j.text_of(llm.await_args.args[0][-1]["content"])
+        self.assertIn('<deleted id="1"/>', latest)
+        self.assertIn('<reaction from="Moss" emoji="😂" on="your message: Hunter. Is name."/>', latest)
+
     async def test_a_status_posted_in_the_channel_is_something_it_said(self):
         await j.on_message(self.said("anyone seen my keys", name="kettle", ping=False))
         rh.flush()

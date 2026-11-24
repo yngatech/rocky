@@ -744,9 +744,13 @@ def memoryless(channel_id):
 def thread_log(message_id):
     return log_for(SimpleNamespace(id=message_id, name=None, guild=None)) if memoryless(message_id) else None
 
-# The logs a message is in: its channel's, and the !nocontext thread opened on it, which it starts
+# The logs a message is in: its channel's, and the !nocontext thread opened on it, which it starts. Loaded if they
+# aren't yet — after a restart, a channel's is only loaded when something's said there, and a reaction, edit or
+# deletion before that would be lost.
 def logs_with(channel_id, message_id):
-    found = [logs[channel_id]] if channel_id in logs else []
+    found = []
+    if has_log(channel_id):  # a channel Discord hasn't cached yet by its id: its name and space are saved
+        found.append(log_for(j.bot.get_channel(channel_id) or SimpleNamespace(id=channel_id, name=None, guild=None)))
     if message_id != channel_id and (log := thread_log(message_id)):
         found.append(log)
     return found
