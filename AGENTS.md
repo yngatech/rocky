@@ -17,6 +17,7 @@
 
 - `scripts/setup.sh` sets up a clone or worktree: it installs the pinned Python and uv with mise and links `.env` in a worktree. Prefix commands with `mise exec --` if `uv --version` doesn't match `mise.toml`.
 - Tests run offline: `uv run --with-requirements requirements.txt python -m unittest`.
+- Test behaviour, not functions: a few tests that each drive a whole flow, such as a message arriving through to Rocky's reply being posted, with fakes only at the outside edge (Discord, the LLM API, the clock, git). Don't add a test per function or branch. When a flow test covers what unit tests in the area checked, remove them.
 - `rocky_replay.py` replays messages to Rocky on the live log, using the eval key. Run replays one at a time: each one writes the whole log to Anthropic's cache, which counts against the account's per-minute input limit.
 
 ## Rocky
