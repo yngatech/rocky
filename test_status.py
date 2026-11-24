@@ -4,7 +4,10 @@
 """
 
 import asyncio
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -142,9 +145,13 @@ class StatusUpdateTests(_StatusCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
         self.old = j.discord.CustomActivity("I feel rested today")
-        self.saved, self.shown, self.posted, self.written = Mock(), AsyncMock(), AsyncMock(), Mock()
+        # what save_status would write: the new status already in the history
+        self.saved = Mock(side_effect=lambda *args: setattr(self, "saved_recent", j.recent_statuses))
+        self.shown, self.posted, self.written = AsyncMock(), AsyncMock(), Mock()
+        self.recent = [f"I feel day {n}." for n in range(j.STATUS_RECENT)]
         patch_all(self, [(j, "status", self.old), (j, "status_turn", 0), (j, "heard", True), (j, "tried_at", None),
-                         (j, "STATUS_EVERY", 180), (j, "gen_lock", asyncio.Lock()),
+                         (j, "STATUS_EVERY", 180), (j, "gen_lock", asyncio.Lock()), (j, "model_name", "jev"),
+                         (j, "recent_statuses", self.recent),
                          (j.bot._connection, "user", SimpleNamespace(display_name="Testbot")),
                          (j, "save_status", self.saved), (j, "show_credit", self.shown),
                          (j, "post_status", self.posted), (j, "write_trace", self.written)])
@@ -183,6 +190,7 @@ class StatusUpdateTests(_StatusCase):
         self.assertEqual(t["requests"], 46)
         self.assertEqual(j.why_panels(t)[0]["picked"], "good")
         self.assertEqual(t["transcript"], "Testbot's diary, today: I feel")
+        self.assertEqual(self.saved_recent, self.recent[1:] + [mood])  # the oldest makes room
         self.assertFalse(j.heard)
         self.assertEqual(j.status_turn, 1)
 
@@ -191,6 +199,7 @@ class StatusUpdateTests(_StatusCase):
         with patch.object(j, "generate_status", generate), patch.object(j, "status_score", judge):
             await j.update_status.coro()
         self.assertIs(j.status, self.old)
+        self.assertEqual(j.recent_statuses, self.recent)
         self.saved.assert_not_called()
         self.shown.assert_not_awaited()
         self.posted.assert_not_awaited()
@@ -227,14 +236,38 @@ class StatusUpdateTests(_StatusCase):
         self.assertIs(j.trace.get(), t)
 
     async def test_original_context_alternation_and_prefix_rotation(self):
-        for turn in (0, 1, 2, 3):
-            with self.subTest(turn=turn), patch.object(j, "status_turn", turn), patch.object(j, "heard", True), \
+        for model, turn in [(model, turn) for model in ("jev", "rocky") for turn in (0, 1, 2, 3)]:
+            with self.subTest(model=model, turn=turn), patch.object(j, "model_name", model), \
+                 patch.object(j, "status_turn", turn), patch.object(j, "heard", True), \
                  patch.object(j, "tried_at", None), \
                  patch.object(j, "recent_chat", Mock(return_value="Speaker: dinner tonight")), \
                  patch.object(j, "generate_filtered_status", AsyncMock(return_value="I feel good")) as generate:
                 await j.update_status.coro()
+                # jev every other time, an LLM every time
                 generate.assert_awaited_once_with("Testbot", j.STATUS_STARTS[turn % 3],
-                                                 "Speaker: dinner tonight" if turn % 2 else "")
+                                                 "Speaker: dinner tonight" if turn % 2 or model == "rocky" else "")
+
+
+class StatusFileTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = Path(self.dir.name) / "status.json"
+        patch_all(self, [(j, "STATUS_PATH", self.path), (j, "status", None), (j, "status_turn", 0),
+                         (j, "status_at", None), (j, "tried_at", None), (j, "recent_statuses", [])])
+
+    def test_a_restart_keeps_the_earlier_statuses(self):
+        j.recent_statuses = ["I feel rain is loud.", "I wonder why toast falls, question?"]
+        j.save_status(j.recent_statuses[-1], 4, "2026-11-20T18:00:00+00:00")
+        j.recent_statuses = []
+        j.load_status()
+        self.assertEqual(j.recent_statuses, ["I feel rain is loud.", "I wonder why toast falls, question?"])
+        self.assertEqual((j.status.name, j.status_turn), ("I wonder why toast falls, question?", 5))
+
+    def test_a_file_from_before_has_just_its_status(self):
+        self.path.write_text(json.dumps({"status": "I feel tired.", "turn": 2, "at": "2026-11-20T18:00:00+00:00"}))
+        j.load_status()
+        self.assertEqual(j.recent_statuses, ["I feel tired."])
 
 
 if __name__ == "__main__":

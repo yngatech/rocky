@@ -21,7 +21,7 @@ class _Case(unittest.IsolatedAsyncioTestCase):
         self.trace = traced(self)
         patch_all(self, [(j, "MODEL_PATH", Path(self.dir.name) / "model.json"), (j, "model_name", "jev"),
                          (j, "has_credit", True), (j, "channel_history", defaultdict(list)),
-                         (j, "TIMEZONE", j.ZoneInfo("UTC"))])  # not whatever .env sets
+                         (j, "TIMEZONE", j.ZoneInfo("UTC")), (j, "recent_statuses", [])])  # not whatever .env sets
 
 
 class ModelCommandTests(_Case):
@@ -233,6 +233,18 @@ class StatusTests(_Case):
                 self.assertEqual(mood, want)
         self.assertIn("kettle: my cat knocked my tea over", self.trace["transcript"])
         self.assertEqual(self.trace["llm"], "rocky")
+
+    async def test_a_status_sees_what_it_posted_on_earlier_days(self):
+        j.model_name = "rocky"
+        for recent in ([], ["I feel rain is loud.", "I wonder why toast falls butter down, question?"]):
+            with self.subTest(recent=recent), patch.object(j, "recent_statuses", recent), \
+                    patch.object(j, "llm", AsyncMock(return_value="I'm thinking about soup.")):
+                await j.generate_status("rocky", ["i'm", "thinking", "about"], "kettle: soup tonight")
+            ask = self.trace["transcript"]
+            self.assertEqual("earlier days" in ask, bool(recent))
+            if recent:  # oldest first, before the chat the new one is about
+                self.assertLess(ask.index(recent[0]), ask.index(recent[1]))
+                self.assertLess(ask.index(recent[1]), ask.index("kettle: soup tonight"))
 
     async def test_a_status_gets_rockys_lines_in_a_fresh_order(self):
         j.model_name = "rocky"

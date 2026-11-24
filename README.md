@@ -129,10 +129,11 @@ Tournament sampling does ~4 API calls per word. Jev costs $0.042 per million inp
 Every `STATUS_EVERY` (180) minutes the bot makes a new custom status, written as the rest of a diary entry that starts "I feel", "I'm thinking about" or "I wonder", in turn ("I feel something what weird is strange means dunno"). The current writer makes it: Jev looms it, Rocky writes it in one Haiku request.
 
 - Jev judges whether each candidate makes sense on its own, with none of the chat in view. Broken grammar is fine; disconnected words and fragments are not. A score of at least `STATUS_THRESHOLD` (0.60) accepts it. It tries up to `STATUS_ATTEMPTS` (3) candidates, then keeps the previous status.
-- Every other status has the last `STATUS_CHAT` (8) messages from the most recently active channel in view, and their words in the vocab ("I'm thinking about going snooker gonna out with mates"). Set `STATUS_CHAT = 0` to use the vocab alone.
+- Every other Jev status has the last `STATUS_CHAT` (8) messages from the most recently active channel in view, and their words in the vocab ("I'm thinking about going snooker gonna out with mates"). Set `STATUS_CHAT = 0` to use the vocab alone.
+- Every Rocky status has those messages in view, and the last `STATUS_RECENT` (7) statuses, whichever writer made them, so it writes about that day instead of saying the same thing again.
 - A new one is only made once someone has said something since the last, so a quiet stretch costs nothing.
 - Each new status is posted in `STATUS_CHANNEL_ID`, if set, so the good ones aren't lost.
-- The latest is kept in `status.json` (gitignored), so a restart shows it again.
+- The latest is kept in `status.json` (gitignored), with the few before it, so a restart shows it again.
 - Out of credit, it shows "out of credit". Just after starting it shows as idle with "waking up" until it has caught up (about 20 seconds).
 
 A Jev candidate costs ~$0.02-0.04, plus the small judgement. Set `STATUS_EVERY = 0`, or turn it off in `/settings`, to leave the status alone.
