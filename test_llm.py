@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fakes import openrouter, patch_all, session, traced
-import jev_bot as j
+import rocky_bot as j
 
 
 # What the LLM said to messages

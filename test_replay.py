@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fakes import answer, isolate_rocky, patch_all
-import jev_bot as j
+import rocky_bot as j
 import rocky_harness as rh
 import rocky_replay
 

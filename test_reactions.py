@@ -58,11 +58,11 @@ class Posts(unittest.TestCase):
 
 
 class Counts(unittest.TestCase):
-    def test_reactions_leave_out_jevs_own(self):
+    def test_reactions_leave_out_the_bots_own(self):
         m = message(1, BOT, 0, [reaction("😂", 3, me=True), reaction("👎", 1), reaction("🤷", 1, me=True)])
         self.assertEqual(r.reactions_of(m), {"😂": 2, "👎": 1})
 
-    def test_audience_counts_people_other_than_jev_in_the_window(self):
+    def test_audience_counts_people_other_than_the_bot_in_the_window(self):
         said = [(T0 - timedelta(minutes=1), ALICE),  # before
                 (T0 + timedelta(minutes=1), BOT), (T0 + timedelta(minutes=2), BOB), (T0 + timedelta(minutes=3), BOB),
                 (T0 + timedelta(minutes=r.AUDIENCE_MINUTES + 1), ALICE)]  # after the window

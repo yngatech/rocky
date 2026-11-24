@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from fakes import openrouter, patch_all, traced
-import jev_bot as j
+import rocky_bot as j
 
 
 class StatusUpdateTests(unittest.IsolatedAsyncioTestCase):

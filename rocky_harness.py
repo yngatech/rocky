@@ -13,7 +13,7 @@ Before it, Haiku wrote Rocky's replies as a ghostwriter: the chat as one transcr
 last message". That framing had it sometimes describe a reply instead of writing it ("Rocky suggests something
 concrete"), and talk about its tools. Here it doesn't write for Rocky; it is Rocky.
 
-jev_bot hands itself over with bind() — run as a script it's __main__, so importing it here would load a second bot.
+rocky_bot hands itself over with bind() — run as a script it's __main__, so importing it here would load a second bot.
 """
 
 import asyncio
@@ -539,7 +539,7 @@ def said(content, bot_name):
 
 # Rocky's turn after `waking` (already in the log): its message and tool calls, usually in one response. Only a turn
 # that just kept or dropped memories, noted, or went to the bar gets another request, for what it then says. Its
-# requests go through jev_bot.llm_message, which counts their cost on the trace.
+# requests go through rocky_bot.llm_message, which counts their cost on the trace.
 # typing: the channel's typing() — shown only for that second request. Discord shows "rocky is typing" for ~10s after
 # it's sent, and nothing stops it but a message, so shown while it decided, it lingered after a turn that only reacted.
 def tools_for(log):
@@ -629,7 +629,7 @@ def chars(log):
 def fill_chars():
     return LOG_TOKENS * CHARS_PER_TOKEN * FILL
 
-# jev_bot's history entries as they'd count in a log: each message, and Rocky's reply or reaction under it
+# rocky_bot's history entries as they'd count in a log: each message, and Rocky's reply or reaction under it
 def entry_chars(entries):
     return sum(len(h.get("content") or "") + EVENT_CHARS
                + (len(h.get("reply") or "") + EVENT_CHARS if "reply" in h or "reaction" in h else 0) for h in entries)
@@ -815,7 +815,7 @@ def replied_outside(m):
     return {"author": "you" if r.author.id == j.bot.user.id else r.author.display_name, "text": snippet(text, 200)}
 
 # A message in the channel, as it arrives: people's and other apps' — not Rocky's own (its turns add those), or
-# !nocontext messages (jev_bot keeps those out of the channel's). Returns its event, or None. log: m's channel's,
+# !nocontext messages (rocky_bot keeps those out of the channel's). Returns its event, or None. log: m's channel's,
 # unless it's another's — a !nocontext message starts its thread's.
 def observe(m, log=None):
     log = log or log_for(m.channel)
@@ -881,7 +881,7 @@ def spoke_elsewhere(channel, text, sent):
     changed(log)
 
 # The first time a channel's log is needed, what the channel's history already holds goes in before what was seen live;
-# after that (a restart), messages it never saw are added at the end. entries: jev_bot's history entries, oldest
+# after that (a restart), messages it never saw are added at the end. entries: rocky_bot's history entries, oldest
 # first. Nothing already in the log changes.
 def sync(log, entries):
     missing = [h for h in entries if h.get("id") and str(h["id"]) not in log.ids and h.get("role") == "user"]

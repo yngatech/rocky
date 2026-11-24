@@ -27,7 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import jev_bot as j
+import rocky_bot as j
 import rocky_harness as rh
 
 HERE = Path(__file__).parent
@@ -121,7 +121,7 @@ async def main():
     if not args.fresh and not channel:
         ap.error("no Rocky logs yet: use --fresh")
     at = args.at and (args.at if args.at.tzinfo else args.at.replace(tzinfo=j.TIMEZONE))
-    logging.getLogger("jev").setLevel(logging.WARNING)
+    logging.getLogger("rocky").setLevel(logging.WARNING)
     picture = args.image and rh.shrunk(Path(args.image).read_bytes())
     if args.image and not picture:
         ap.error(f"{args.image} isn't a picture")

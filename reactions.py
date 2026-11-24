@@ -1,10 +1,10 @@
 """
-How people reacted to what jev posted: its replies by who wrote them (Jev, in older logs, or Rocky) and by
-length, its statuses, and the most-reacted. Reads logs/ for what jev posted, and Discord for the reactions on it now,
-since they aren't logged and keep coming after jev moves on. Reads only; costs nothing.
+How people reacted to what the bot posted: its replies by who wrote them (Jev, in older logs, or Rocky) and by
+length, its statuses, and the most-reacted. Reads logs/ for what it posted, and Discord for the reactions on it now,
+since they aren't logged and keep coming after it moves on. Reads only; costs nothing.
 
 👎 is a Rocky meme as often as a complaint, so it's counted apart: "besides 👎" is the share with some other reaction.
-"audience" is how many people other than jev spoke in the channel in the AUDIENCE_MINUTES after a post, so a quiet
+"audience" is how many people other than the bot spoke in the channel in the AUDIENCE_MINUTES after a post, so a quiet
 evening can be told from a flop.
 
     uv run --with-requirements requirements.txt python reactions.py [--days 7] [--top 10] [--logs DIR]
@@ -20,18 +20,18 @@ from pathlib import Path
 
 import discord
 
-# Only the report: not jev's startup lines, or discord.py's about voice and intents it doesn't need here
-logging.getLogger("jev").setLevel(logging.WARNING)
+# Only the report: not the bot's startup lines, or discord.py's about voice and intents it doesn't need here
+logging.getLogger("rocky").setLevel(logging.WARNING)
 logging.getLogger("discord").setLevel(logging.ERROR)
 
-import jev_bot as j  # noqa: E402
+import rocky_bot as j  # noqa: E402
 
 THUMBS = "👎"
 AUDIENCE_MINUTES = 30
 LENGTHS = [(1, "1 word"), (3, "2-3 words"), (6, "4-6 words"), (None, "7+ words")]
 
 
-# jev's replies and statuses that made it to Discord, from the logs
+# The bot's replies and statuses that made it to Discord, from the logs
 def posts(paths, status_channel):
     found = []
     for path in paths:
@@ -50,12 +50,12 @@ def posts(paths, status_channel):
     return found
 
 
-# People's reactions to a message, emoji to count — not jev's own
+# People's reactions to a message, emoji to count — not the bot's own
 def reactions_of(message):
     return {j.emoji_text(r.emoji): n for r in message.reactions if (n := r.count - r.me)}
 
 
-# How many people other than jev spoke in the channel in the AUDIENCE_MINUTES after `at`
+# How many people other than the bot spoke in the channel in the AUDIENCE_MINUTES after `at`
 def audience(at, said, bot_id):
     end = at + timedelta(minutes=AUDIENCE_MINUTES)
     return len({who for when, who in said if at < when <= end and who != bot_id})
@@ -151,7 +151,7 @@ def report(ps, top):
 async def main():
     parser = argparse.ArgumentParser(description=__doc__.strip().split("\n\n")[0])
     parser.add_argument("--days", type=int, help="only the last DAYS days of logs (default: all)")
-    parser.add_argument("--logs", type=Path, default=j.LOG_DIR, help="where jev's logs are (default: %(default)s)")
+    parser.add_argument("--logs", type=Path, default=j.LOG_DIR, help="where the bot's logs are (default: %(default)s)")
     parser.add_argument("--top", type=int, default=10, help="how many of the most-reacted posts to list")
     args = parser.parse_args()
 

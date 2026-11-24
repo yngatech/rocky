@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 from fakes import patch_all
 import discord
-import jev_bot as j
+import rocky_bot as j
 import rocky_harness as rh
 
 ADMIN, OWNER, PERSON = 500, 501, 502

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fakes import answer, isolate_rocky, patch_all, traced
 import discord
-import jev_bot as j
+import rocky_bot as j
 import rocky_harness as rh
 
 
@@ -66,7 +66,7 @@ class ReactionContextTests(_Discord):
         return SimpleNamespace(channel_id=self.channel.id, message_id=700, guild_id=400,
                                user_id=uid, member=Mock(spec=discord.Member, id=uid, display_name=name, guild=self.guild), emoji=emoji)
 
-    # Who reacted to jev's reply, as people Rocky can ping (mention_targets)
+    # Who reacted to the bot's reply, as people Rocky can ping (mention_targets)
     def names(self, entry=None):
         entry = {"name": "Speaker", **(entry or self.entry)}
         return {name for name, uid in j.mention_targets([entry], "Testbot", reactors=True).items()
@@ -430,7 +430,7 @@ class ActionTests(_Discord):
 
 
 class WakingTests(_Discord):
-    """Discord shows a bot online as soon as it connects; jev stays idle until it has caught up."""
+    """Discord shows a bot online as soon as it connects; it stays idle until it has caught up."""
 
     async def test_idle_until_caught_up_then_online_with_its_status(self):
         presence = AsyncMock()
@@ -765,8 +765,8 @@ class AppHistoryTests(_Handling):
 
 
 class NoContextThreadTests(_Handling):
-    """"@jev !nocontext ..." opens a thread on the message, a channel of its own: answered there with nothing from
-    before, every message in it to jev, and without Rocky's memories."""
+    """"@rocky !nocontext ..." opens a thread on the message, a channel of its own: answered there with nothing from
+    before, every message in it to the bot, and without Rocky's memories."""
 
     def setUp(self):
         super().setUp()
@@ -774,7 +774,7 @@ class NoContextThreadTests(_Handling):
         self.partials = {}
         self.channel.get_partial_message = lambda i: self.partials.setdefault(i, Mock(add_reaction=AsyncMock()))
 
-    # A !nocontext message to jev, which a thread can be opened on — with the message's id, as Discord's are
+    # A !nocontext message to the bot, which a thread can be opened on — with the message's id, as Discord's are
     def asked(self, content):
         m = self.said(content)
 
@@ -810,7 +810,7 @@ class NoContextThreadTests(_Handling):
         self.assertEqual((self.trace["no_context"], self.trace["channel_id"]), (True, thread.id))
         # the actions find it from the message or in the thread
         self.assertTrue(j.in_channel(self.trace, self.channel.id) and j.in_channel(self.trace, thread.id))
-        # in the thread, nobody needs to tag jev, and it has the thread so far
+        # in the thread, nobody needs to tag the bot, and it has the thread so far
         follow = self.said("why granite", ping=False, channel=thread)
         self.assertTrue(j.should_respond(follow))
         self.assertEqual(await self.answer(follow, "Very good."), [("pip", "@Testbot favourite rock?"), ("you", "Granite.")])
