@@ -59,13 +59,13 @@ Rocky can ping people by writing `@` and their full display name (`@Pip Meadow, 
 
 - `/settings` shows how often a new status is made (`STATUS_EVERY`) and Rocky's context window (`LOG_TOKENS`), visible only to you. Admins get a menu under each: a status every 1 to 24 hours, or off, and a window of 25K to 90K tokens (past 100K Haiku charges 5× for the whole prompt). A smaller window takes effect after Rocky's next turn, when the oldest half of its log goes; a much smaller one can take a few turns, halving each time. Kept in `settings.json` (gitignored). The menus stop working after 15 minutes or a restart. Works in a DM too.
 
-Right-click (long-press on mobile) a reply, a message the bot reacted to, or a posted status and pick from **Apps** for answers only you see:
+Right-click (long-press on mobile) a reply, the message that woke Rocky, or a posted status and pick from **Apps** for answers only you see:
 
 - **Context**: what the bot had in view: the end of Rocky's log of the channel, its turn included, or what a status was asked, with the model and message count, and for an LLM turn its output tokens, input against the model's window, and cached versus uncached input, each with a text bar. A long transcript is attached as `context.txt`.
 - **Stats**: the model, total recorded cost in USD (every logged attempt, including costs billed to a linked provider key), and context usage of the final request.
 - **Diagnostics**: request counts and purposes, elapsed time, model IDs, billing, cache and output details, retries, and why an LLM request stopped early (a refusal is also logged as a warning with its reason, provider and generation id, never what was said).
 
-These all read the last `LOG_DAYS` (7) of `logs/`, Jev's entries from before Rocky included, and make no model requests. Everyone who can use apps in a channel sees the actions; a server can limit them in **Server Settings → Integrations**. The bot registers them each time it starts, so an open Discord client may need reloading (Ctrl+R) the first time.
+These all read the last `LOG_DAYS` (7) of `logs/`, finding the message by its id, and make no model requests. Everyone who can use apps in a channel sees the actions; a server can limit them in **Server Settings → Integrations**. The bot registers them each time it starts, so an open Discord client may need reloading (Ctrl+R) the first time.
 
 ## Rocky
 
@@ -103,7 +103,7 @@ Set `STATUS_EVERY = 0`, or turn it off in `/settings`, to leave the status alone
 
 ## Logs
 
-Every message the bot handles is written as one JSON line to `logs/YYYY-MM-DD.jsonl`: who said what, the transcript Rocky saw, what it said and reacted with, every API call with its purpose and billing (why it stopped, the provider and the generation id), and the cost, including requests billed to our own Anthropic key, which OpenRouter reports as free (`byok_cost`). A Rocky turn keeps its events from Rocky's log in `rocky_events`. Entries from Jev's time have its history, question score, reactions and each word it picked, with their candidates and scores. `logs/` holds what people said in the server, so it's gitignored: keep it local and delete old days whenever.
+Every message the bot handles is written as one JSON line to `logs/YYYY-MM-DD.jsonl`: who said what, the transcript Rocky saw, what it said and reacted with, every API call with its purpose and billing (why it stopped, the provider and the generation id), and the cost, including requests billed to our own Anthropic key, which OpenRouter reports as free (`byok_cost`). A Rocky turn keeps its events from Rocky's log in `rocky_events`. `logs/` holds what people said in the server, so it's gitignored: keep it local and delete old days whenever.
 
 ### Rocky's logs
 
@@ -136,7 +136,7 @@ Tests run offline:
 uv run --with-requirements requirements.txt python -m unittest
 ```
 
-They use synthetic logs, Discord messages and API results: `test_harness.py` for Rocky's log and turns, `test_llm.py` for its requests and statuses, `test_mentions.py` for routing, history, catch-up and pings, `test_explanations.py` for Context, Stats and Diagnostics, `test_status.py`, `test_settings.py`, `test_viewer.py`, `test_reactions.py` and `test_replay.py`.
+They use synthetic logs, Discord messages and API results: `test_harness.py` for Rocky's log and turns, `test_llm.py` for its requests and statuses, `test_mentions.py` for routing, history, catch-up and pings, `test_actions.py` for messages answered end to end and Context, Stats and Diagnostics on what was posted, `test_status.py`, `test_settings.py`, `test_viewer.py`, `test_reactions.py` and `test_replay.py`.
 
 `rocky_replay.py` replays messages to Rocky on a copy of the live channel log, its memories, `rocky_lines.txt` and `rocky_body.txt`, and prints its tool calls and results, reactions and what it said. Nothing is written back, and its thinking isn't printed. In a worktree it reads the files of the checkout its `.env` links to.
 

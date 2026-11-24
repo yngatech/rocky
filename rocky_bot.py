@@ -36,7 +36,6 @@ OPENROUTER_KEY = os.environ["OPENROUTER_API_KEY"]
 STATUS_CHANNEL = int(os.environ.get("STATUS_CHANNEL_ID") or 0)  # where each new status is also posted — unset for nowhere
 TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE") or "UTC")  # the clock an LLM's transcript shows times on (IANA name)
 VIEWER_PORT = int(os.environ.get("ROCKY_VIEWER_PORT") or 0)  # the page of Rocky's logs, on 127.0.0.1 — unset for none
-JEV_MODEL = "~typesafe/jev-latest"  # Jev, the word-by-word writer before Rocky, in old logs
 
 HISTORY_SCAN = 400              # recent messages read to rebuild a channel's history after a restart
 TO_BOT_KEPT = 7                 # messages to the bot kept in a channel's history past HISTORY_SCAN
@@ -1010,7 +1009,8 @@ def in_channel(t, channel_id):
         return channel_id in (t["channel_id"], t.get("from_channel_id"))
     return bool(t.get("status")) and channel_id == STATUS_CHANNEL
 
-# The log entry for `target` in the channel, among those that has()
+# The log entry for `target` in the channel, among those that has(): by its id, as the message that woke the bot or
+# what it posted — not its text, which can have action lines under it or be one part of a long reply
 def find_trace(channel_id, target, has):
     for path in sorted(LOG_DIR.glob("*.jsonl"), reverse=True)[:LOG_DAYS]:
         for line in reversed(path.read_text().splitlines()):
@@ -1018,19 +1018,8 @@ def find_trace(channel_id, target, has):
                 t = json.loads(line)
             except ValueError:
                 continue
-            if not in_channel(t, channel_id) or not has(t):
-                continue
-            if target.author.id == bot.user.id:
-                # Entries from before reply_id (or status_id) was logged: the text instead
-                if "status" in t:
-                    if t.get("status_id", target.id) == target.id and t["status"] == target.content:
-                        return t
-                elif (t.get("reply_id", target.id) == target.id and
-                      (t.get("sent", t.get("reply")) == target.content or
-                       "sent" not in t and t.get("reply") == target.clean_content)):
-                    return t
-            elif t.get("message_id") == target.id or ("message_id" not in t
-                                                      and t.get("message") == (message_text(target) or "hello")):
+            if (in_channel(t, channel_id) and has(t) and target.id in
+                    (t.get("message_id"), t.get("reply_id"), t.get("status_id"), *t.get("reply_ids", []))):
                 return t
     return None
 
@@ -1042,29 +1031,18 @@ def answer_privately(interaction):
                                                allowed_mentions=discord.AllowedMentions.none())
     return send
 
-# A turn Jev's reply-or-react check answered with a reaction, in old logs — Rocky reacts by itself, and may write as
-# well, so its reactions are its turn's like its messages
-def jev_reacted(t):
-    return bool(t.get("reaction")) and not t.get("llm")
-
-
-# Context: the transcript the bot had in view for one of its answers. For Rocky's turn,
-# the end of its log; for a status, what it was asked, with the recent chat. In old logs, for Jev's reply the transcript
-# it picked words from, and for its reaction the question check's, which chose reacting. An answer logged without one
-# (out of credit, say) has none to show.
+# Context: the transcript the bot had in view for one of its answers. For Rocky's turn, the end of its log; for a
+# status, what it was asked, with the recent chat. An answer logged without one (out of credit, say) has none to show.
 CONTEXT_LIMIT = 2000  # Discord's message length — a longer transcript goes as a file
 
 # A code block in someone's message would open or end ours
 def unfence(text):
     return text.replace("```", "`\u200b``")
 
-def logged_context(t):
-    return t.get("asked_transcript") if jev_reacted(t) else t.get("transcript")
-
 # The Context action's answer for `target`, through send(content=None, embed=None, files=None)
 async def explain_context(channel_id, guild, target, send):
     t = await asyncio.to_thread(find_trace, channel_id, target,
-                                lambda t: (t.get("reply") or t.get("reaction") or t.get("status")) and logged_context(t))
+                                lambda t: (t.get("reply") or t.get("reaction") or t.get("status")) and t.get("transcript"))
     if t is None:
         await send("Nothing logged for that")
         return
@@ -1084,18 +1062,8 @@ EXPLANATION_COLOR = 0x8796FF
 def model_label(t):
     if t.get("requests") == 0 and t.get("reply") in NO_MONEY:
         return "None (out of credit)"
-    if jev_reacted(t):
-        return "Jev"
     # Preserve the model version recorded at generation time, even after a config change.
-    return t.get("llm_model") or (t.get("llm") or "jev").title()
-
-
-def chat_message_count(t):
-    if (count := t.get("llm_messages")) is not None:
-        return count
-    if "history" in t and "status" not in t:
-        return len(t["history"]) + 1
-    return None
+    return t.get("llm_model") or "Not recorded"
 
 
 def percentage(part, total):
@@ -1112,7 +1080,7 @@ def text_bar(part, total, cells=20):
 
 def context_usage(t):
     tokens, window = t.get("llm_prompt_tokens"), t.get("llm_window")
-    if jev_reacted(t) or tokens is None:
+    if tokens is None:
         return "Not recorded"
     if window:
         return f"{tokens:,} / {window:,} tokens · {percentage(tokens, window)} used"
@@ -1127,7 +1095,7 @@ def money(cost):
 # transcript is attached instead, which Discord shows above the embed and can open without downloading — so it's
 # uploaded again each time rather than cached as a link.
 def context_response(t, bot_name):
-    text = logged_context(t)
+    text = t["transcript"]
     tokens, window, cached = t.get("llm_prompt_tokens"), t.get("llm_window"), t.get("llm_cached_tokens")
     files = []
     if len(text) <= CONTEXT_LIMIT:
@@ -1137,9 +1105,9 @@ def context_response(t, bot_name):
         files.append(("context.txt", text.encode()))
     embed = discord.Embed(title=f"What {bot_name} saw", description=description, color=EXPLANATION_COLOR)
     embed.add_field(name="Model", value=model_label(t))
-    if (count := chat_message_count(t)) is not None:
+    if (count := t.get("llm_messages")) is not None:
         embed.add_field(name="Chat messages", value=f"{count:,}")
-    if not jev_reacted(t) and tokens is not None:
+    if tokens is not None:
         if (output := t.get("llm_completion_tokens")) is not None:
             embed.add_field(name="Output", value=f"{output:,} tokens")
         if window:
@@ -1173,15 +1141,13 @@ def stats_response(t):
     embed.add_field(name="Model", value=model_label(t))
     embed.add_field(name="Total cost", value=money(t.get("cost")))
     usage = "No generation" if model_label(t).startswith("None") else context_usage(t)
-    if (count := chat_message_count(t)) is not None:
+    if (count := t.get("llm_messages")) is not None:
         usage += f"\n{count:,} chat messages"
     embed.add_field(name="Context", value=usage, inline=False)
     return embed
 
 
-# decision and status_check: Jev's question check and status judge, in old logs
-REQUEST_PURPOSES = {"decision": "Check whether to reply or react", "reply": "Write the reply",
-                    "status": "Write the status", "status_check": "Check the status makes sense"}
+REQUEST_PURPOSES = {"reply": "Write the reply", "status": "Write the status"}
 
 
 def diagnostics_response(t):
@@ -1198,7 +1164,7 @@ def diagnostics_response(t):
             key = call["purpose"], call["model"], call["is_byok"]
             groups.setdefault(key, []).append(call)
         for (purpose, model, byok), group in groups.items():
-            name = {JEV_MODEL: "Jev", LLM_MODEL: "Rocky"}.get(model, model)
+            name = "Rocky" if model == LLM_MODEL else model
             billing = ("Anthropic key" if model.startswith("anthropic/") else "provider key") if byok else "OpenRouter"
             costs = [None if c["router_cost"] is None or c["key_cost"] is None
                      else c["router_cost"] + c["key_cost"] for c in group]
@@ -1217,31 +1183,24 @@ def diagnostics_response(t):
             if stops:
                 detail += "\nStopped early: " + ", ".join(f"{r} ×{n}" if n > 1 else r for r, n in stops.items())
             embed.add_field(name=REQUEST_PURPOSES.get(purpose, purpose), value=detail, inline=False)
-        retries = sum(c.get("attempt", 0) > 0 for c in calls)
-        generations = max(t.get("llm_attempts", 1) - 1, 0) + max(len(t.get("status_attempts", [])) - 1, 0)
-        if retries or generations:
-            embed.add_field(name="Retries", value=f"{retries:,} HTTP retries · {generations:,} extra generations",
-                            inline=False)
-    else:
-        model = JEV_MODEL if not t.get("llm") or jev_reacted(t) else t.get("llm_model")
-        embed.add_field(name="Model ID", value=f"`{model}`" if model else "Not recorded", inline=False)
+        if retries := sum(c.get("attempt", 0) > 0 for c in calls):
+            embed.add_field(name="Retries", value=f"{retries:,} HTTP retries", inline=False)
     if (cost := t.get("cost")) is not None:
         byok = t.get("byok_cost", 0)
         embed.add_field(name="Billing", value=f"OpenRouter: {money(cost - byok)}\nProvider key: {money(byok)}",
                         inline=False)
-    if not jev_reacted(t):
-        cache = []
-        cached = t.get("llm_cached_tokens")
-        if (tokens := t.get("llm_prompt_tokens")) is not None:
-            cache.append(f"{tokens:,} input tokens" + (f" ({cached:,} cached)" if cached is not None else ""))
-        elif cached is not None:
-            cache.append(f"{cached:,} cached input tokens")
-        if (output := t.get("llm_completion_tokens")) is not None:
-            cache.append(f"{output:,} output tokens")
-        if cache:
-            embed.add_field(name="Final generation", value=" · ".join(cache), inline=False)
-    embed.set_footer(text=("Routed through OpenRouter. Provider keys are billed by their provider." if calls else
-                           "Request purposes and retries were not recorded for this message."))
+    cache = []
+    cached = t.get("llm_cached_tokens")
+    if (tokens := t.get("llm_prompt_tokens")) is not None:
+        cache.append(f"{tokens:,} input tokens" + (f" ({cached:,} cached)" if cached is not None else ""))
+    elif cached is not None:
+        cache.append(f"{cached:,} cached input tokens")
+    if (output := t.get("llm_completion_tokens")) is not None:
+        cache.append(f"{output:,} output tokens")
+    if cache:
+        embed.add_field(name="Final generation", value=" · ".join(cache), inline=False)
+    if calls:
+        embed.set_footer(text="Routed through OpenRouter. Provider keys are billed by their provider.")
     return embed
 
 
@@ -1424,7 +1383,7 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
         log.info(f"[REACT] {' '.join(e for _, e in turn.reactions)} (${trace.get()['cost']:.5f})")
     if not turn.text:
         if has_credit is False and not turn.reactions:
-            await post_answer(m, where, random.choice(NO_MONEY))
+            await answer_broke(m, where)
         return
     targets = mention_targets([*entries, entry], bot_name, reactors=True)
     content, allowed = resolve_mentions(rh.unaddressed(turn.text, m.author.display_name), targets)
@@ -1464,6 +1423,12 @@ async def post_answer(m, where, content, allowed=None):
         except discord.Forbidden as e:  # a thread it could open but not post in: answered where it was asked
             log.warning(f"Posting in thread {where.id} failed, replying instead: {e}")
     return await m.reply(content, mention_author=False, allowed_mentions=allowed)
+
+# Out of credit, a gif says so. Logged as the reply, so the actions find it.
+async def answer_broke(m, where):
+    gif = random.choice(NO_MONEY)
+    log.info(f"[OUT] out of credit: {gif}")
+    note(reply=gif, reply_id=(await post_answer(m, where, gif)).id)
 
 # A !nocontext thread's name, and its log's: the question, without the tag to the bot. Rocky's log of a fallback answer
 # has it too — named "DM" or the channel's, with nothing else in it, Rocky wrote notes on what to say in 2 of 6
@@ -1536,10 +1501,7 @@ async def handle(m):
     note(bot_name=bot_name)
     try:
         if has_credit is False:
-            gif = random.choice(NO_MONEY)
-            note(reply=gif)
-            log.info(f"[OUT] out of credit: {gif}")
-            await post_answer(m, where, gif)
+            await answer_broke(m, where)
         elif apart:
             await rocky_turn(m, entry, bot_name, [], where, None if thread else rh.apart(thread_name(m), m.channel.id))
         else:
