@@ -893,7 +893,7 @@ def sync(log, entries):
     if missing:
         seed = Log(log.channel, log.space, log.channel_id, next_n=log.next_n)
         for h in missing:
-            e = seed.message(h["name"], j.unrender(h["content"]), h["at"], to_bot=h.get("to_bot", False),
+            e = seed.message(h["name"], h["content"], h["at"], to_bot=h.get("to_bot", False),
                              discord_id=h["id"])
             if "reply" in h:
                 seed.add("rocky", text=h["reply"], calls=[], id=h.get("reply_id"), at=h.get("reply_at") or h["at"])

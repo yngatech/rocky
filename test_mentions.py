@@ -194,6 +194,16 @@ class MentionTests(_Discord):
                 self.assertEqual(text, "think @Testbot is drunk?")
                 self.assertEqual(j.history_entry(m)["content"], "think @Testbot is drunk?")
 
+    async def test_a_message_from_history_reads_as_it_did_live(self):
+        m = self.message(content="<@100000000000000001> tea or coffee?\n\nasking for a friend", ping=True, reply=False)
+        filled, live = rh.Log("general", "400", 300), rh.Log("general", "400", 300)
+        rh.sync(filled, [j.history_entry(m)])
+        rh.observe(m, live)
+        text = lambda log: next(e["text"] for e in log.events if e["type"] == "message")
+        self.assertEqual(text(filled), "@Testbot tea or coffee?\n\nasking for a friend")
+        self.assertEqual(text(filled), text(live))
+        self.assertEqual(rh.render(filled, "rocky")[2], rh.render(live, "rocky")[2])
+
     async def test_other_mentions_and_possessives_are_preserved(self):
         m = self.message(content="<@100000000000000001>'s friend <@!100000000000000002> likes <@&200000000000000002>", ping=True)
         m.mentions.append(SimpleNamespace(id=100000000000000002, display_name="Friend"))
