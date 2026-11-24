@@ -58,7 +58,7 @@ class _Discord(unittest.IsolatedAsyncioTestCase):
 class ReactionContextTests(_Discord):
     def setUp(self):
         super().setUp()
-        self.entry = {"role": "user", "name": "Speaker", "content": "hello", "id": 600,
+        self.entry = {"name": "Speaker", "content": "hello", "id": 600,
                       "reply": "Hello", "reply_id": 700}
         j.channel_history[self.channel.id] = [self.entry]
 
@@ -467,7 +467,7 @@ class _Handling(_Discord):
                          (j, "load_history", AsyncMock())])
         # Chatter before the conversation, which a !nocontext thread shouldn't see
         j.channel_history[self.channel.id] = [
-            {"role": "user", "name": "kettle", "content": "the toaster is on fire again", "id": 1,
+            {"name": "kettle", "content": "the toaster is on fire again", "id": 1,
              "at": datetime.now(timezone.utc) - timedelta(minutes=10), "to_bot": False}]
 
     def said(self, content, *, to=None, bot=False, name="pip", ping=True, channel=None):
@@ -1011,10 +1011,10 @@ class HistoryForRockyTests(_Handling):
         j.channel_history[self.channel.id] = []
 
     def test_the_store_keeps_what_a_rebuild_reads_and_who_asked_from_further_back(self):
-        j.add_history(self.channel.id, {"role": "user", "name": "pip", "content": "rocky soup?", "id": 1, "at": self.start,
+        j.add_history(self.channel.id, {"name": "pip", "content": "rocky soup?", "id": 1, "at": self.start,
                                         "to_bot": True, "users": {"501": "pip"}})
         for i in range(j.HISTORY_SCAN + 100):
-            j.add_history(self.channel.id, {"role": "user", "name": "kettle", "content": f"message {i}", "id": i + 2,
+            j.add_history(self.channel.id, {"name": "kettle", "content": f"message {i}", "id": i + 2,
                                             "at": self.start + timedelta(seconds=i + 1), "to_bot": False})
         stored = [e["content"] for e in j.channel_history[self.channel.id]]
         self.assertEqual(stored, ["rocky soup?"] + [f"message {i}" for i in range(100, j.HISTORY_SCAN + 100)])
