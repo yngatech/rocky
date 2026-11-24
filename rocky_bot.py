@@ -570,13 +570,15 @@ def message_text(m):
     tags += [attachment_tag(a) for a in m.attachments] + [f"[sticker: {s.name}]" for s in m.stickers]
     return " ".join([text.strip(), *tags]).strip()
 
+NICKNAMES = {"rock"}  # what people in the server call Rocky, matched like its name
+
 def should_respond(m):
     if m.author.bot: return False
     if m.guild is None: return m.author.id in DM_USERS  # in a DM, every message is to the bot
     if rh.no_memories(m.channel): return True  # and in a !nocontext thread
     if bot.user in m.mentions: return True
     if (role := bot_role(m)) and role in m.role_mentions: return True
-    names = {bot.user.display_name, m.guild.me.display_name}
+    names = {bot.user.display_name, m.guild.me.display_name, *NICKNAMES}
     for name in names:
         if not name:
             continue
