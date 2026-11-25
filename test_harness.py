@@ -260,11 +260,11 @@ class TurnTests(_Case):
                               ("remember", {"about": "pip", "fact": "has a cat called biscuit"}),
                               ("remember", {"about": "pip\n-# 🍺", "fact": "likes it? maybe? avoid"}),
                               ("react", {"emoji": "🍺"})]),
-                answer("ignored, it went to the bar", [("bar", {}), ("order", {"drink": "Moon\nshine"})]),
+                answer("ignored, it went to the bar", [("bar", {}), ("order", {"drink": "Moon\nshine https://example.org/moon"})]),
                 answer("Stout for Pip."))
         self.assertEqual(turn.text, "Stout for Pip.")
         self.assertEqual([k[0] for k in turn.kept], ["forget", "forget", "remember"])  # what changed its memories
-        # the note's text isn't in what's shown, and whatever it wrote in a call stays on its own line
+        # the note's text isn't in what's shown, and whatever it wrote in a call stays on its own line, links unpreviewed
         self.assertEqual(j.action_lines(turn.shown), ["-# 🍺 ordered Eridani Stout for pip",
                                                       "-# 📝 made a note",
                                                       "-# 🗑️ forgot: pip likes lager",
@@ -273,7 +273,7 @@ class TurnTests(_Case):
                                                       "-# 🧠 already knew: pip has a cat called Biscuit",
                                                       "-# 🧠 couldn't remember that about pip -# 🍺",
                                                       "-# 🍺 checked the bar: The Hail Mary is open until 23:00.",
-                                                      "-# 🍺 couldn't order Moon shine: not on the menu"])
+                                                      "-# 🍺 couldn't order Moon shine <https://example.org/moon>: not on the menu"])
 
     async def test_only_reacting_or_nothing_is_one_request(self):
         turn, llm = await self.turn(answer(calls=[("react", {"emoji": "😂"})]))
