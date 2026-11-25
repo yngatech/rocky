@@ -122,6 +122,19 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
                           (LONG, parts[0].id)))
         self.assertEqual(rh.memory("400")["facts"][0]["fact"], "has a cat called Biscuit")
 
+        # A turn that only reacts is saved too, though nothing in the channel changes after it, so a restart then keeps it
+        async def thinking():  # longer than SAVE_AFTER: the message's own save is written meanwhile
+            rh.flush()
+            return 200, completion(answer(calls=[("react", {"emoji": "🗿"})]))
+        j.has_credit = True
+        nod = await self.message("granite forever", thinking())
+        self.assertEqual((self.discord.answer(nod), self.discord.reactions[-1]), ([], (nod.id, "🗿")))
+        rh.flush()  # what a restart writes
+        saved = json.loads((rh.LOG_DIR / f"{nod.channel.id}.json").read_text())
+        self.assertEqual([(e["type"], e.get("text")) for e in saved["events"][-3:]],
+                         [("message", "@Rocky granite forever"), ("rocky", ""), ("result", None)])
+        self.assertEqual(saved["asked"], rh.logs[nod.channel.id].asked.isoformat())
+
         # A log started afresh reads the channel back from Discord: Rocky's replies come back as it wrote them, and
         # the lines under them don't, so it never reads them as its own words
         rh.logs.clear()
