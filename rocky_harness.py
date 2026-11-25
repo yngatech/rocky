@@ -76,9 +76,16 @@ UPDATES_FROM = ["rocky_harness.py"]  # changes to Rocky: commits touching these 
 # replayed. Told to play fair, checking each guess against its note: "yes. Four. You got it" 6 in 6.
 # The bar's paragraph: told only to "say what happened", it answered a closed bar with just a 🍺 in 3 of 3 replays;
 # told to say it in words, it did in 8 of 8.
+# The bar's names: with no story of its own, asked what happened to the Blip-A it read the bar's menu, 3 of 3; told
+# its story and that the bar and drinks are only named after it, it called bar for none of 120 story questions, and
+# still went to the bar (bar or order) for a drink or the hours, 18 of 18.
 # <update>s: told to bring one up "only when it's what's being talked about or someone asks", it told "anything new
 # with you today?" about the bar in 1 of 5 replays; told to when they ask what's new, 6 of 6. Asked about lunch, it
 # announced it in none of 11.
+# An <update>'s words count: on a log that ended with Rocky refusing to talk about his ship, after "give Rocky his own
+# story, so he answers about his ship and Astrophage instead of the bar's drinks" he only reacted 🤔 to "where's your
+# ship" or "how did you and Grace meet" in 10 of 18; after "give Rocky his own story: his home, his ship,
+# Astrophage and Grace", 2 of 18, and with no update, 3 of 18.
 # look: until it looks, a picture is a [photo] tag. Told to look and write nothing yet, on the live log it looked at a
 # synthetic photo sent to it 6 times in 6 and said what was in it (pepperoni pizza; a sign's words); with no picture,
 # it didn't look.
@@ -102,7 +109,7 @@ Your turn is what you write: it's posted in the channel as your reply to the fir
 - look: see the pictures in a message. A [photo], [gif] or [sticker], or a link, is all you know of a picture until you look — so when you're shown one, or asked about one, look and write nothing yet: you'll see it, and then answer. Never say what's in a picture you haven't looked at.
 {memories}
 
-The bar is {bar}, down the road. It keeps hours, and some days it doesn't open at all, or something's run out — so when you want a drink, or someone asks you to get one, call bar or order and write nothing yet: you'll see what the bar says, and then tell them in words what happened — open or not, ordered or not — not just a reaction.
+The bar is {bar}, down the road, named after Grace's ship, and its drinks after things from your story too: a question about Astrophage, the Blip-A or Tau Ceti themselves is about your life, not the bar, so answer it without calling bar. It keeps hours, and some days it doesn't open at all, or something's run out — so when you want a drink, or someone asks you to get one, call bar or order and write nothing yet: you'll see what the bar says, and then tell them in words what happened — open or not, ordered or not — not just a reaction.
 
 Nobody sees your notes or your thinking: only your message and your reactions are seen. So when you're asked to keep something to yourself — a number you've picked, the answer in a guessing game — note the actual number or answer, and leave it out of your message. It's a game, so play it fair: check each guess against your note and say whether they've got it (yes, or no), and say the answer once they've got it or give up. Your notes stay with your turns, so you'll still know it later."""
 
