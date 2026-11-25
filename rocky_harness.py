@@ -569,6 +569,10 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
     after = next((i for i, e in enumerate(log.events) if e is woke), len(log.events))
     if any(e["type"] == "rocky" and not e.get("elsewhere") for e in log.events[after + 1:]):
         return turn
+    # or, for an edit, a turn that was deciding when it came reacted to the message: that turn went before the edit
+    if woke is not waking and any(e["type"] == "rocky" and any(reacts_to(c, waking["n"]) for c in e["calls"])
+                                  for e in log.events):
+        return turn
     # Every message to it since it last spoke is this turn's: one that came while it waited is in this request, and has
     # no turn of its own. Marked for good, so the turn it's in reads the same in every later request
     since = max((i for i, e in enumerate(log.events) if e["type"] == "rocky"), default=-1)
@@ -934,10 +938,11 @@ def reacted(channel_id, message_id, emoji, author, added=True):
                     author=author or "someone", removed=not added)
             changed(log)
 
-# A message edited. to_bot: the edit made it one to Rocky, and wakes him (rocky_bot.on_raw_message_edit)
+# A message edited. to_bot: the edit made it one to Rocky, and wakes him (rocky_bot.on_raw_message_edit). One edited
+# into a !nocontext question is its thread's alone, as it would have been sent.
 def edited(m, to_bot=False):
     for log in logs_with(m.channel.id, m.id):
-        if not isinstance(n := log.ids.get(str(m.id)), int):
+        if not isinstance(n := log.ids.get(str(m.id)), int) or log.channel_id == m.channel.id and j.no_context(m):
             continue
         text = j.message_text(m)
         last = next((e["text"] for e in reversed(log.events)

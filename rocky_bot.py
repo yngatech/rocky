@@ -1056,24 +1056,25 @@ async def on_raw_bulk_message_delete(p):
 # been sent that way: only when the edit is what does it, and only within EDIT_WAKES minutes of the message. Discord
 # often adds a link's embed just after the message arrives, as an edit, and people fix typos: a message that was to
 # the bot already had its turn. A reply out of nowhere to an old message would be wrong, so that's only recorded.
-# What it was is what the channel's history and Rocky's log have of it (the log outlasts a restart), not discord.py's
-# copy, which it only has for a message it saw arrive — so the history has it too.
-def edit_wakes(m):
+# What it was: discord.py's copy, if it has one, and what the channel's history and Rocky's log have of it — the log
+# outlasts a restart, and a history rebuilt from Discord has the bot's reply under it.
+def edit_wakes(before, m):
     if not should_respond(m) or rh.clock() - m.created_at > timedelta(minutes=EDIT_WAKES):
         return False
     entry = next((e for e in channel_history.get(m.channel.id, []) if e.get("id") == m.id), None)
-    was = [x for x in (entry and entry.get("to_bot"), rh.had(m)) if x is not None]
+    was = [x for x in (before and should_respond(before), rh.had(m),
+                       entry and (entry.get("to_bot") or "reply" in entry or "reaction" in entry)) if x is not None]
     return bool(was) and not any(was)  # and if nothing knows what it was, it doesn't wake
 
 # The raw event: discord.py only calls on_message_edit for a message in its cache, not one sent before a restart
 @bot.event
 async def on_raw_message_edit(p):
     after = p.message
-    wakes = edit_wakes(after)
-    # a !nocontext question is answered in a thread of its own, not in the channel's log
-    rh.edited(after, to_bot=wakes and not no_context(after))
-    # a !nocontext message's is in its thread's
-    entry = next((e for e in channel_history.get(after.channel.id, []) + channel_history.get(after.id, [])
+    wakes = edit_wakes(p.cached_message, after)
+    rh.edited(after, to_bot=wakes)
+    # a !nocontext message's is in its thread's, and only there: an edit can make one of chatter
+    entry = next((e for e in ([] if no_context(after) else channel_history.get(after.channel.id, []))
+                  + channel_history.get(after.id, [])
                   if e.get("id") == after.id), None)
     if entry and (content := message_text(after)):
         entry["content"] = content

@@ -1118,6 +1118,22 @@ class NoContextThreadTests(_Handling):
         edit = rh.logs[q.id].events[-1]
         self.assertEqual((edit["type"], edit["text"]), ("edit", "@Testbot favourite colour?"))
 
+    async def test_a_question_edited_into_a_nocontext_one_is_answered_in_its_thread_alone(self):
+        rh.log_for(self.channel)
+        q = self.asked("favourite colour?")
+        q.content, q.mentions = "favourite colour?", []  # chatter when it's sent
+        q.clean_content = discord.Message.clean_content.function(q)
+        await j.on_message(q)
+        q.content, q.mentions = f"<@{self.user.id}> !nocontext favourite colour, secretly?", [self.user]
+        q.clean_content = discord.Message.clean_content.function(q)
+        with patch.object(j, "llm_message", AsyncMock(return_value=answer("Green."))):
+            await j.on_raw_message_edit(SimpleNamespace(message=q, cached_message=None))
+        self.assertEqual(self.threads[q.id].send.call_args.args[0], "Green.")
+        q.reply.assert_not_awaited()
+        # the channel never sees the question it became
+        self.assertNotIn("secretly", json.dumps([e.get("text") for e in rh.logs[self.channel.id].events]))
+        self.assertNotIn("secretly", json.dumps([e["content"] for e in j.channel_history[self.channel.id]]))
+
     async def test_replies_under_an_old_side_conversation_stay_out_of_history(self):
         q = self.said("!nocontext favourite rock?")
         a = self.said("Granite. [↳](https://discord.com/channels/400/300/800)", to=q, bot=True)
