@@ -438,10 +438,10 @@ def use(log, call, waking):
             # Its thinking once spilled into a fact ("favourite film is Rocky — no, Project Hail Mary? Avoid; keep
             # simple"), and was kept twice
             if len(fact["fact"]) > FACT_CHARS or "?" in fact["fact"]:
-                return ("unremembered", None, fact["about"]), f"Not kept: one short, settled fact, under {FACT_CHARS} characters."
+                return None, f"Not kept: one short, settled fact, under {FACT_CHARS} characters."
             if same := next((x for x in kept["facts"] if (x["about"].lower(), x["fact"].lower()) ==
                              (fact["about"].lower(), fact["fact"].lower())), None):
-                return ("known", same["n"], f"{same['about']}: {same['fact']}"), f"Already remembered as [{same['n']}]."
+                return None, f"Already remembered as [{same['n']}]."
             kept["next"] += 1
             kept["facts"].append(fact)
             memories_changed()
@@ -458,18 +458,17 @@ def use(log, call, waking):
                 return None, "Nothing to note."
             return ("note", None, None), "Noted."  # its call in the log is the note, and only there
         if f.get("name") == "bar":
-            says = bar_state()[1]
-            return ("bar", says.split(" Menu:")[0], None), says
+            return ("bar", None, None), bar_state()[1]
         if f.get("name") == "order":
             is_open, says = bar_state()
             asked = str(args.get("drink") or "").strip()
             drink, who = menu_drink(asked), str(args.get("for") or "").strip().lstrip("@")
             if not is_open:
-                return ("unordered", drink or asked, says), says
+                return ("unordered", drink or asked, None), says
             if not drink:
-                return ("unordered", asked, "not on the menu"), f"Not on the menu. {says}"
+                return ("unordered", asked, None), f"Not on the menu. {says}"
             if drink == bar_today(clock().astimezone(j.TIMEZONE).date())[1]:
-                return ("unordered", drink, "it's run out today"), f"The {drink}'s run out today. {says}"
+                return ("unordered", drink, None), f"The {drink}'s run out today. {says}"
             return ("order", drink, who or None), f"Ordered: {drink}{f' for {who}' if who else ''}, £{MENU[drink]:.2f}."
         return None, f"No tool called {f.get('name')!r}."
     except (ValueError, KeyError, TypeError) as e:
@@ -616,7 +615,8 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
                 elif done:
                     if done[0] in MEMORY_CALLS:
                         turn.kept.append(done)
-                    turn.shown.append(done)
+                    if done[0] != "forget" or done[2]:  # not a forget of no fact
+                        turn.shown.append(done)
             if text:
                 turn.text, turn.spoke = text, e
                 break

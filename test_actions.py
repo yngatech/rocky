@@ -9,9 +9,7 @@ import json
 from collections import defaultdict
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 from fakes import Discord, answer, completion, isolate_rocky, openrouter, patch_all
 import rocky_bot as j
@@ -19,7 +17,6 @@ import rocky_harness as rh
 
 LONG = ("Granite is hard and old and it holds up mountains. " * 50).strip()  # past Discord's 2000 characters
 OUT_OF_CREDIT = (402, {"error": {"code": 402, "message": "Insufficient credits"}})
-BEFORE_OPENING = datetime(2026, 11, 4, 10, tzinfo=timezone.utc)  # a Wednesday morning, a day the bar opens at 16:00
 
 
 class AnsweringTests(unittest.IsolatedAsyncioTestCase):
@@ -54,10 +51,9 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
                 await self.message("my cat is called biscuit", (200, completion(answer(
                     calls=[("remember", {"about": "pip", "fact": "has a cat called Biscuit"})]))),
                     (200, completion(answer("Biscuit. Good name."))))]
-        with patch.object(rh, "clock", lambda: BEFORE_OPENING):
-            said.append(await self.message("pick a number, and is the bar open?", (200, completion(answer(
-                "Seven! Bar open!", [("note", {"text": "picked 7"}), ("bar", {})]))),  # written before it knew
-                (200, completion(answer("Rocky pick number. Secret. Bar closed until four, sad sad sad.")))))
+        said.append(await self.message("pick a number, and is the bar open?", (200, completion(answer(
+            "Seven! Bar open!", [("note", {"text": "picked 7"}), ("bar", {})]))),  # written before it knew
+            (200, completion(answer("Rocky pick number. Secret. Bar closed until four, sad sad sad.")))))
         said.append(await self.message("tell me everything about granite", (200, completion(answer(LONG)))))
         j.heard = True
         with openrouter((200, completion(answer("I feel granite is best rock."), cost=.0004))):
@@ -80,7 +76,7 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         # under the message it wrote once it had seen what the bar said, with its note shown as made, but not what's in it
         self.assertEqual([m.content for m in secret_reply],
                          ["Rocky pick number. Secret. Bar closed until four, sad sad sad.\n-# 📝 made a note\n"
-                          "-# 🍺 checked the bar: Closed. Opens at 16:00."])
+                          "-# 🍺 checked the bar"])
         self.assertFalse(any("picked 7" in m.content or "Seven" in m.content for m in self.discord.messages.values()))
         self.assertEqual([m.reference and m.reference.message_id for m in parts], [long.id, None])
         self.assertEqual(" ".join(m.content for m in parts), LONG)

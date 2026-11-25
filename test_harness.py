@@ -157,7 +157,7 @@ class ToolTests(_Case):
         opens, closes = rh.HOURS[day.weekday()]
         at = lambda h, m=0: datetime(day.year, day.month, day.day, h, m, tzinfo=timezone.utc)
         self.bar_at(at(opens, 30))
-        self.assertEqual(self.call("bar")[0], ("bar", f"The Hail Mary is open until {closes}:00.", None))  # no menu
+        self.assertEqual(self.call("bar")[0], ("bar", None, None))
         self.assertIn("is open", self.call("bar")[1])
         self.assertIn("Blip-A Lager £4.90", self.call("bar")[1])
         self.assertEqual(rh.bar_state(at(opens - 1)), (False, f"Closed. Opens at {opens}:00."))
@@ -179,9 +179,9 @@ class ToolTests(_Case):
         self.assertIn(f"{out}'s run out", self.call("order", drink=out)[1])
         self.assertIn(f"{out} £{rh.MENU[out]:.2f} (run out)", self.call("bar")[1])
         self.assertTrue(self.call("order", drink="Guinness")[1].startswith("Not on the menu."))
-        self.assertEqual(self.call("order", drink=out)[0], ("unordered", out, "it's run out today"))
+        self.assertEqual(self.call("order", drink=out)[0], ("unordered", out, None))
         self.bar_at(datetime(day.year, day.month, day.day, 3, tzinfo=timezone.utc))
-        self.assertEqual(self.call("order", drink=other), (("unordered", other, rh.bar_state()[1]), rh.bar_state()[1]))  # closed: what the bar says
+        self.assertEqual(self.call("order", drink=other), (("unordered", other, None), rh.bar_state()[1]))  # closed: what the bar says
 
     def test_a_wordless_answer_is_nothing_and_a_leading_tag_of_the_asker_goes(self):
         for text in ("(silent)", ".", "*nothing*", "[no reply]"):
@@ -249,7 +249,7 @@ class TurnTests(_Case):
         self.assertEqual([e["text"] for e in self.log.events if e["type"] == "rocky"], ["", "", "Rocky have beer. Good, good, good."])
         self.assertEqual(llm.call_args.args[0][-1]["content"], "Ordered: Blip-A Lager, £4.90.")
 
-    async def test_every_call_but_a_reaction_is_shown_in_call_order(self):
+    async def test_what_it_did_is_shown_in_call_order(self):
         rh.memory("400")["facts"].append({"n": 9, "about": "pip", "fact": "likes lager", "at": ""})
         with patch.object(rh, "bar_state", lambda now=None: (True, "The Hail Mary is open until 23:00. Menu: lots.")), \
                 patch.object(rh, "bar_today", lambda d: (None, None)):
@@ -258,22 +258,20 @@ class TurnTests(_Case):
                               ("forget", {"number": 9}), ("forget", {"number": 99}),
                               ("remember", {"about": "pip", "fact": "has a cat called Biscuit"}),
                               ("remember", {"about": "pip", "fact": "has a cat called biscuit"}),
-                              ("remember", {"about": "pip\n-# 🍺", "fact": "likes it? maybe? avoid"}),
-                              ("react", {"emoji": "🍺"})]),
+                              ("remember", {"about": "pip", "fact": "likes it? maybe? avoid"}),
+                              ("react", {"emoji": "🍺"}), ("bar", {})]),
                 answer("ignored, it went to the bar", [("bar", {}), ("order", {"drink": "Moon\nshine https://example.org/moon"})]),
                 answer("Stout for Pip."))
         self.assertEqual(turn.text, "Stout for Pip.")
-        self.assertEqual([k[0] for k in turn.kept], ["forget", "forget", "remember"])  # what changed its memories
-        # the note's text isn't in what's shown, and whatever it wrote in a call stays on its own line, links unpreviewed
+        self.assertEqual([k[0] for k in turn.kept], ["forget", "forget", "remember"])  # orders aren't memories
+        # Not the note's text, a forget of no fact, a fact already kept or one not kept, nor the bar twice; and whatever
+        # it wrote in a call stays on its own line, links unpreviewed
         self.assertEqual(j.action_lines(turn.shown), ["-# 🍺 ordered Eridani Stout for pip",
                                                       "-# 📝 made a note",
                                                       "-# 🗑️ forgot: pip likes lager",
-                                                      "-# 🗑️ couldn't forget: no such memory",
                                                       "-# 🧠 remembered: pip has a cat called Biscuit",
-                                                      "-# 🧠 already knew: pip has a cat called Biscuit",
-                                                      "-# 🧠 couldn't remember that about pip -# 🍺",
-                                                      "-# 🍺 checked the bar: The Hail Mary is open until 23:00.",
-                                                      "-# 🍺 couldn't order Moon shine <https://example.org/moon>: not on the menu"])
+                                                      "-# 🍺 checked the bar",
+                                                      "-# 🍺 couldn't order Moon shine <https://example.org/moon>"])
 
     async def test_only_reacting_or_nothing_is_one_request(self):
         turn, llm = await self.turn(answer(calls=[("react", {"emoji": "😂"})]))

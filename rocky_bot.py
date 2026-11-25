@@ -545,9 +545,8 @@ NO_CONTEXT = re.compile(r"(?<!\S)!nocontext(?!\S)[ \t]*", re.IGNORECASE)
 # The link back that the bot's replies in side conversations (before threads) ended with is UI, never model context.
 SIDE_LINK = re.compile(r" \[↳(?: thread)?\]\(https://discord\.com/channels/(?:@me|\d+)/\d+/\d+\)$")
 # So are the lines under Rocky's messages saying what it did (action_lines)
-ACTION_LINES = re.compile(r"^-# (?:🍺 (?:ordered|couldn't order|checked the bar:)|👀 (?:looked at|couldn't see)|📝 made a note"
-                          r"|🧠 (?:remembered:|already knew:|couldn't remember)|🗑️ (?:forgot:|couldn't forget:))(?: .*)?$\n?",
-                          re.MULTILINE)
+ACTION_LINES = re.compile(r"^-# (?:🍺 (?:ordered|couldn't order|checked the bar)|👀 (?:looked at|couldn't see)|📝 made a note"
+                          r"|🧠 remembered:|🗑️ forgot:)(?: .*)?$\n?", re.MULTILINE)
 
 def no_context(m):  # not in a !nocontext thread, which it carries on
     return should_respond(m) and NO_CONTEXT.search(strip_mention(m)) is not None and not rh.no_memories(m.channel)
@@ -1373,10 +1372,11 @@ def message_parts(text, limit=MESSAGE_LIMIT):
         text = text[cut:].strip()
     return [*parts, text]
 
-# What Rocky did besides talking, a subtext line each under its message, in the order it did them: everything but its
-# reactions, which are seen anyway, and what it noted, which is secret. Only under a message, and not in its log — it
-# has its calls there. What it wrote in a call is kept to one short line, its links unpreviewed, so ACTION_LINES takes
-# all of it out again: a preview would be read back as an [embed] of its message.
+# What Rocky did besides talking, a subtext line each under its message, in the order it did them: what it did, not
+# what came of it, which its message says. Not its reactions, which are seen anyway, nor what it noted, which is
+# secret, nor calls that changed nothing in its memories. Only under a message, and not in its log — it has its calls
+# there. What it wrote in a call (a drink, a fact) is kept to one short line, its links unpreviewed, so ACTION_LINES
+# takes all of it out again: a preview would be read back as an [embed] of its message.
 ACTION_CHARS = 100  # the most of what it wrote in a call that a line shows
 
 def action_lines(shown):
@@ -1391,10 +1391,10 @@ def action_lines(shown):
         if kind == "order":
             line = f"🍺 ordered {a}" + (f" for {b}" if b else "")
         elif kind == "unordered":
-            line = f"🍺 couldn't order {a or 'a drink'}: {b}"
+            line = f"🍺 couldn't order {a or 'a drink'}"
         elif kind == "bar":
-            line = f"🍺 checked the bar: {a}"
-            if f"-# {line}" in lines:  # it sometimes looks twice in a turn: the second says nothing new
+            line = "🍺 checked the bar"
+            if f"-# {line}" in lines:  # it sometimes looks twice in a turn
                 continue
         elif kind == "look":
             line = f"👀 looked at {'the picture' if b == 1 else f'{b} pictures'}" if b else "👀 couldn't see a picture"
@@ -1402,12 +1402,8 @@ def action_lines(shown):
             line = "📝 made a note"
         elif kind == "remember":
             line = f"🧠 remembered: {fact}"
-        elif kind == "known":
-            line = f"🧠 already knew: {fact}"
-        elif kind == "unremembered":
-            line = f"🧠 couldn't remember that about {b}"
         else:  # forget
-            line = f"🗑️ forgot: {fact}" if fact else "🗑️ couldn't forget: no such memory"
+            line = f"🗑️ forgot: {fact}"
         lines.append(f"-# {line}")
     return lines
 
