@@ -417,7 +417,7 @@ class Turn:
     text: str = ""
     reactions: list = field(default_factory=list)  # [(message n, emoji)]
     kept: list = field(default_factory=list)       # what remember and forget did
-    shown: list = field(default_factory=list)      # what it did that's shown under its message: kept, and orders
+    shown: list = field(default_factory=list)      # its calls that are shown under its message (rocky_bot.action_lines)
     spoke: dict = None                             # the log's event for its message, to give it its Discord id
     requests: int = 0
     events: list = field(default_factory=list)     # its events in the log — its turns and their calls' results
@@ -454,19 +454,21 @@ def use(log, call, waking):
                 memories_changed()
             return ("forget", n, gone and f"{gone['about']}: {gone['fact']}"), "Forgot it." if gone else "No such fact."
         if f.get("name") == "note":
-            # its call in the log is the note
-            return None, "Noted." if str(args.get("text") or "").strip() else "Nothing to note."
+            if not str(args.get("text") or "").strip():
+                return None, "Nothing to note."
+            return ("note", None, None), "Noted."  # its call in the log is the note, and only there
         if f.get("name") == "bar":
-            return None, bar_state()[1]
+            return ("bar", None, None), bar_state()[1]
         if f.get("name") == "order":
             is_open, says = bar_state()
+            asked = str(args.get("drink") or "").strip()
+            drink, who = menu_drink(asked), str(args.get("for") or "").strip().lstrip("@")
             if not is_open:
-                return None, says
-            drink, who = menu_drink(str(args.get("drink") or "")), str(args.get("for") or "").strip().lstrip("@")
+                return ("unordered", drink or asked, None), says
             if not drink:
-                return None, f"Not on the menu. {says}"
+                return ("unordered", asked, None), f"Not on the menu. {says}"
             if drink == bar_today(clock().astimezone(j.TIMEZONE).date())[1]:
-                return None, f"The {drink}'s run out today. {says}"
+                return ("unordered", drink, None), f"The {drink}'s run out today. {says}"
             return ("order", drink, who or None), f"Ordered: {drink}{f' for {who}' if who else ''}, £{MENU[drink]:.2f}."
         return None, f"No tool called {f.get('name')!r}."
     except (ValueError, KeyError, TypeError) as e:
@@ -604,15 +606,16 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
                     on, result, found = await look(log, c["arguments"], waking)
                     turn.events.append(log.add("result", after=turn.events[-1], id=c["id"], content=result, on=on,
                                                pictures=found))
+                    turn.shown.append(("look", on, len(found)))
                     continue
                 done, result = use(log, {"function": {"name": c["name"], "arguments": c["arguments"]}}, waking)
                 turn.events.append(log.add("result", after=turn.events[-1], id=c["id"], content=result))
                 if done and done[0] == "react":
                     turn.reactions.append(done[1:])
                 elif done:
-                    if done[0] != "order":
+                    if done[0] in MEMORY_CALLS:
                         turn.kept.append(done)
-                    if done[2]:  # not a forget of no fact
+                    if done[0] != "forget" or done[2]:  # not a forget of no fact
                         turn.shown.append(done)
             if text:
                 turn.text, turn.spoke = text, e

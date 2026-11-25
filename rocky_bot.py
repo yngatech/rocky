@@ -545,7 +545,8 @@ NO_CONTEXT = re.compile(r"(?<!\S)!nocontext(?!\S)[ \t]*", re.IGNORECASE)
 # The link back that the bot's replies in side conversations (before threads) ended with is UI, never model context.
 SIDE_LINK = re.compile(r" \[↳(?: thread)?\]\(https://discord\.com/channels/(?:@me|\d+)/\d+/\d+\)$")
 # So are the lines under Rocky's messages saying what it did (action_lines)
-ACTION_LINES = re.compile(r"^-# (?:🍺 ordered|🧠 remembered:|🗑️ forgot:) .*$\n?", re.MULTILINE)
+ACTION_LINES = re.compile(r"^-# (?:🍺 (?:ordered|couldn't order|checked the bar)|👀 (?:looked at|couldn't see)|📝 made a note"
+                          r"|🧠 remembered:|🗑️ forgot:)(?: .*)?$\n?", re.MULTILINE)
 
 def no_context(m):  # not in a !nocontext thread, which it carries on
     return should_respond(m) and NO_CONTEXT.search(strip_mention(m)) is not None and not rh.no_memories(m.channel)
@@ -1371,16 +1372,39 @@ def message_parts(text, limit=MESSAGE_LIMIT):
         text = text[cut:].strip()
     return [*parts, text]
 
-# What Rocky did besides talking, a subtext line each under its message: what it ordered, remembered and forgot. Not
-# its notes, which are secret. Only under a message, and not in its log — it has its calls there.
+# What Rocky did besides talking, a subtext line each under its message, in the order it did them: what it did, not
+# what came of it, which its message says. Not its reactions, which are seen anyway, nor what it noted, which is
+# secret, nor calls that changed nothing in its memories. Only under a message, and not in its log — it has its calls
+# there. What it wrote in a call (a drink, a fact) is kept to one short line, its links unpreviewed, so ACTION_LINES
+# takes all of it out again: a preview would be read back as an [embed] of its message.
+ACTION_CHARS = 100  # the most of what it wrote in a call that a line shows
+
 def action_lines(shown):
+    def brief(x):
+        x = " ".join(x.split())
+        x = x if len(x) <= ACTION_CHARS else x[:ACTION_CHARS - 1] + "…"
+        return LINK.sub(lambda m: f"<{m[1]}>", x)
     lines = []
     for kind, a, b in shown:
+        a, b = (brief(x) if isinstance(x, str) else x for x in (a, b))
+        fact = " ".join(b.split(": ", 1)) if isinstance(b, str) else None  # "pip: likes lager" as "pip likes lager"
         if kind == "order":
-            lines.append(f"-# 🍺 ordered {a}" + (f" for {b}" if b else ""))
-        else:
-            about, _, fact = b.partition(": ")
-            lines.append(f"-# {'🧠 remembered' if kind == 'remember' else '🗑️ forgot'}: {about} {fact}")
+            line = f"🍺 ordered {a}" + (f" for {b}" if b else "")
+        elif kind == "unordered":
+            line = f"🍺 couldn't order {a or 'a drink'}"
+        elif kind == "bar":
+            line = "🍺 checked the bar"
+            if f"-# {line}" in lines:  # it sometimes looks twice in a turn
+                continue
+        elif kind == "look":
+            line = f"👀 looked at {'the picture' if b == 1 else f'{b} pictures'}" if b else "👀 couldn't see a picture"
+        elif kind == "note":
+            line = "📝 made a note"
+        elif kind == "remember":
+            line = f"🧠 remembered: {fact}"
+        else:  # forget
+            line = f"🗑️ forgot: {fact}"
+        lines.append(f"-# {line}")
     return lines
 
 # Rocky takes its turn in the channel's log (rocky_harness) — its message, its reactions on any message
@@ -1428,11 +1452,11 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
     log.info(f"[OUT] {turn.text} (${trace.get()['cost']:.5f})")
     # Past Discord's limit, the rest follow the reply. They're one turn in the log, so any part is its message
     parts = message_parts(content)
-    if actions := "\n".join(action_lines(turn.shown)):
-        if len(parts[-1]) + 1 + len(actions) <= MESSAGE_LIMIT:
-            parts[-1] += "\n" + actions
+    for line in action_lines(turn.shown):  # whole lines, so each part's are taken out when it's read back
+        if len(parts[-1]) + 1 + len(line) <= MESSAGE_LIMIT:
+            parts[-1] += "\n" + line
         else:
-            parts.append(actions)
+            parts.append(line)
     sent = await post_answer(m, where, parts[0], allowed)
     more = []
     for part in parts[1:]:
