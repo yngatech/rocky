@@ -99,7 +99,7 @@ UPDATES_FROM = ["rocky_harness.py"]  # changes to Rocky: commits touching these 
 # and both in none. Told to answer all of them, saying who's who, both in 3 of 9; the rest, on both, only reacted.
 HARNESS = """
 
-This is #{channel} on Discord, as it happens. People's messages come to you as <message> elements: who sent it (from), when (at, {timezone} time), its number (id), and the message it replies to (reply_to). to="you" marks one sent to you — tagging you, or replying to you. woke_you="yes" marks each that woke you. The ones since your last turn are what you're answering now — several, when they came at once: answer them all in your one message, saying who's who. Older ones have had their turn. Reactions, edits and deletions show up as they happen. Your own earlier messages are your turns. An <update> is a change to you, like a new tool, at the point it happened: tell them about it when they ask what's new with you, or it's what's being talked about, but don't announce it out of nowhere.
+This is #{channel} on Discord, as it happens. People's messages come to you as <message> elements: who sent it (from), when (at, {timezone} time), its number (id), and the message it replies to (reply_to). to="you" marks one sent to you — tagging you, or replying to you. woke_you="yes" marks each that woke you. The ones since your last turn are what you're answering now — several, when they came at once: answer them all in your one message, saying who's who. Older ones have had their turn. Reactions, edits and deletions show up as they happen: an <edit> marked to="you" made its message one to you. Your own earlier messages are your turns. An <update> is a change to you, like a new tool, at the point it happened: tell them about it when they ask what's new with you, or it's what's being talked about, but don't announce it out of nowhere.
 
 Your turn is what you write: it's posted in the channel as your reply to the first message that woke you. So write only {bot}'s message, in his voice — never notes about the chat or about what {bot} would say — and don't start it with @ their name. You can also use tools. Your response ends at your first call, so write your message first and then make your calls, in the same response — a call on its own, with no message, is only for what needs no answer. Don't wait to see what a tool did before you speak, except to look and at the bar (below):
 - react: put an emoji on a message. Most of what's said to you that isn't a question or a request — "lol", "welp", "bad rocky", news, moans, thanks, polls — a friend would just react to, not answer: react, and write nothing. But a question to you always gets an answer in words, yes-or-no ones too, and so does a request; write a message too when you truly have something to add. To react and speak, write the message, then react: a reaction first leaves your turn with nothing said.
@@ -250,7 +250,7 @@ def memories_changed():
 #   message:  {"n", "author", "uid", "text", "to_bot", "reply_to": n or "you", "you_said": that message of Rocky's,
 #              "older": {"author": a name or "you", "text"} when what it replies to isn't in the log, "woke": it woke Rocky}
 #   reaction: {"on": n or "you", "you_said", "emoji", "author", "removed"}
-#   edit:     {"on": n, "text"}
+#   edit:     {"on": n, "text", "to_bot": it made the message one to Rocky, and woke him (rocky_bot), "woke"}
 #   deleted:  {"on": n or "you", "you_said"}  — and the message gets "deleted"; tidy() then blanks it ("gone")
 #   rocky:    {"text", "calls": [{"id", "name", "arguments"}], "reasoning", "id": its Discord message,
 #              "more_ids": the messages after it, when it was too long for one}
@@ -344,7 +344,8 @@ def people_turn(events, clock):
             removed = ' removed="yes"' if e.get("removed") else ""
             lines.append(f'<reaction from="{attr(e["author"])}" emoji="{attr(e["emoji"])}" on="{attr(on)}"{removed}/>')
         elif e["type"] == "edit":
-            lines.append(f'<edit id="{e["on"]}">{html.escape(e["text"], quote=False)}</edit>')
+            to = (' to="you" woke_you="yes"' if e.get("woke") else ' to="you"' if e.get("to_bot") else "")
+            lines.append(f'<edit id="{e["on"]}"{to}>{html.escape(e["text"], quote=False)}</edit>')
         elif e["type"] == "deleted":
             on = f'your message: {snippet(e.get("you_said") or "")}' if e["on"] == "you" else e["on"]
             lines.append(f'<deleted id="{attr(on)}"/>')
@@ -559,18 +560,22 @@ def tools_for(log):
 
 async def take_turn(log, waking, bot_name="rocky", typing=None):
     turn = Turn()
+    # A message edited to be to it woke it with that edit, which is marked, not the message as it was first sent:
+    # that line is in the cache, and stays as it was
+    woke = next((e for e in reversed(log.events) if e["type"] == "edit" and e["on"] == waking["n"] and e.get("to_bot")),
+                waking)
     # Already in one of its turns' requests, before what it said: it's had its answer. Its messages from outside a turn
     # (spoke_elsewhere) don't count — a status posted while a message waited doesn't answer it
-    after = next((i for i, e in enumerate(log.events) if e is waking), len(log.events))
+    after = next((i for i, e in enumerate(log.events) if e is woke), len(log.events))
     if any(e["type"] == "rocky" and not e.get("elsewhere") for e in log.events[after + 1:]):
         return turn
     # Every message to it since it last spoke is this turn's: one that came while it waited is in this request, and has
     # no turn of its own. Marked for good, so the turn it's in reads the same in every later request
     since = max((i for i, e in enumerate(log.events) if e["type"] == "rocky"), default=-1)
     for e in log.events[since + 1:]:
-        if e["type"] == "message" and e["to_bot"] and not e.get("gone"):
+        if e["type"] in ("message", "edit") and e.get("to_bot") and not e.get("gone"):
             e["woke"] = True
-    waking["woke"] = True
+    woke["woke"] = True
     now = clock()
     if log.asked and (now - log.asked).total_seconds() > CACHE_HOURS * 3600:
         tidy(log)  # the cache has gone, so this request is read in full anyway
@@ -929,16 +934,34 @@ def reacted(channel_id, message_id, emoji, author, added=True):
                     author=author or "someone", removed=not added)
             changed(log)
 
-def edited(m):
+# A message edited. to_bot: the edit made it one to Rocky, and wakes him (rocky_bot.on_raw_message_edit)
+def edited(m, to_bot=False):
     for log in logs_with(m.channel.id, m.id):
         if not isinstance(n := log.ids.get(str(m.id)), int):
             continue
         text = j.message_text(m)
         last = next((e["text"] for e in reversed(log.events)
                      if e["type"] == "message" and e["n"] == n or e["type"] == "edit" and e["on"] == n), None)
-        if text and text != last:
-            log.add("edit", on=n, text=text)
+        if text and (text != last or to_bot):
+            log.add("edit", on=n, text=text, **({"to_bot": True} if to_bot else {}))
             changed(log)
+
+# Whether Rocky has had m to answer: it, or an edit to it, was to him, or he reacted to it. None if no log has it.
+def had(m):
+    found = None
+    for log in logs_with(m.channel.id, m.id):
+        if not isinstance(n := log.ids.get(str(m.id)), int):
+            continue
+        found = bool(found) or any(e["type"] == "message" and e["n"] == n and (e["to_bot"] or e.get("woke")) or
+                                   e["type"] == "edit" and e["on"] == n and e.get("to_bot") or
+                                   e["type"] == "rocky" and any(reacts_to(c, n) for c in e["calls"]) for e in log.events)
+    return found
+
+def reacts_to(call, n):
+    try:
+        return call["name"] == "react" and json.loads(call["arguments"]).get("message") == n
+    except (ValueError, AttributeError):
+        return False
 
 # A message deleted: marked now, and blanked at the next tidy
 def deleted(channel_id, message_id):

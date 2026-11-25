@@ -659,12 +659,75 @@ class RockyHarnessTests(_Handling):
         self.assertEqual(texts[texts.index("@Testbot old question") + 1], "Old answer.")  # its reply under it
         self.assertEqual(texts[-2:], ["@Testbot what did I miss", "Hi."])
 
+    async def test_an_edit_that_names_it_wakes_it_once_while_the_message_is_recent(self):
+        def edit(m, content):  # as discord.py hands it over, the message as it is now
+            m.content = content
+            m.clean_content = discord.Message.clean_content.function(m)
+            return SimpleNamespace(message=m, cached_message=None)
+
+        # asked without its name, so nothing happens — then its name edited in
+        asked = self.said("can you look in the back?", ping=False)
+        await j.on_message(asked)
+        llm = AsyncMock(return_value=answer("Rocky look. Back is empty, question."))
+        with patch.object(j, "llm_message", llm):
+            await j.on_raw_message_edit(edit(asked, "can you look in the back testbot?"))
+        asked.reply.assert_awaited_once()  # a reply to the message itself
+        self.assertEqual(asked.reply.call_args.args[0], "Rocky look. Back is empty, question.")
+        # its log has the message as it was first sent, and the edit as what woke it
+        n = rh.logs[self.channel.id].ids[str(asked.id)]
+        sent = j.text_of(llm.await_args.args[0][-1]["content"])
+        self.assertRegex(sent, rf'<message id="{n}" from="pip" at="[0-9:]+">can you look in the back\?</message>\n'
+                               rf'<edit id="{n}" to="you" woke_you="yes">can you look in the back testbot\?</edit>$')
+        self.assertTrue(j.channel_history[self.channel.id][-1]["to_bot"])
+
+        # one that woke it by its name, and one it reacted to, woken by another
+        named = self.said("testbot is the kettle on", ping=False)
+        with patch.object(j, "llm_message", AsyncMock(return_value=answer("Kettle on."))):
+            await j.on_message(named)
+        await j.on_message(news := self.said("the kettle broke", name="kettle", ping=False))
+        react = answer(calls=[("react", {"emoji": "😢", "message": rh.logs[self.channel.id].ids[str(news.id)]})])
+        with patch.object(j, "llm_message", AsyncMock(return_value=react)):
+            await j.on_message(self.said("testbot did you hear", ping=False))
+        self.partials[news.id].add_reaction.assert_awaited_once_with("😢")
+        await j.on_message(milk := self.said("where's the milk", ping=False))
+        # then Discord's embed for it, typos fixed, its name taken out and put back — after a restart, from Rocky's
+        # log alone: each already had its turn
+        rh.flush()
+        rh.logs.clear()
+        j.taken.clear()
+        j.channel_history.clear()
+        with patch.object(j, "llm_message", llm):
+            for m, content in ((named, named.content), (named, "testbot is the kettel on"), (named, "is the kettle on"),
+                               (named, "testbot is the kettle on"), (asked, "can you look in the back, testbot?"),
+                               (news, "testbot the kettle broke")):
+                await j.on_raw_message_edit(edit(m, content))
+        self.assertEqual(llm.await_count, 1)
+        self.assertEqual([e["text"] for e in rh.logs[self.channel.id].events if e["type"] == "edit"][-2:],
+                         ["can you look in the back, testbot?", "testbot the kettle broke"])
+        # but one that was never to it does, from its log
+        with patch.object(j, "llm_message", llm):
+            await j.on_raw_message_edit(edit(milk, "testbot where's the milk"))
+        milk.reply.assert_awaited_once()
+        self.assertEqual(llm.await_count, 2)
+
+        # nor does an edit to a message older than EDIT_WAKES minutes, or to one nothing has a record of
+        old = self.said("anyone want tea", ping=False)
+        await j.on_message(old)
+        missed = self.said("what's for tea", ping=False)  # sent while the bot was down
+        with patch.object(j, "llm_message", llm):
+            await j.on_raw_message_edit(edit(missed, "testbot what's for tea"))
+            with patch.object(rh, "clock", lambda: old.created_at + timedelta(minutes=j.EDIT_WAKES, seconds=1)):
+                await j.on_raw_message_edit(edit(old, "testbot want tea?"))
+        self.assertEqual(llm.await_count, 2)
+        last = rh.logs[self.channel.id].events[-1]
+        self.assertEqual((last["type"], last["text"], last.get("to_bot")), ("edit", "testbot want tea?", None))
+
     async def test_an_edit_and_a_nocontext_message(self):
         m = self.said("rocky soup or stew", ping=False)
         await j.on_message(m)
         m.content = "rocky soup or salad"
         m.clean_content = discord.Message.clean_content.function(m)
-        await j.on_message_edit(m, m)
+        await j.on_raw_message_edit(SimpleNamespace(message=m, cached_message=m))
         self.assertEqual(rh.logs[self.channel.id].events[-1], {**rh.logs[self.channel.id].events[-1], "type": "edit",
                                                                  "on": 1, "text": "rocky soup or salad"})
         await j.on_raw_message_delete(SimpleNamespace(channel_id=self.channel.id, message_id=m.id))
@@ -954,7 +1017,7 @@ class AppHistoryTests(_Handling):
         after.id = app.id
         after.author.display_name = "Renamed App"
         after.embeds = [discord.Embed(title="Contribution milestone", description="synthetic-user passed **2,000 contributions**.")]
-        await j.on_message_edit(app, after)
+        await j.on_raw_message_edit(SimpleNamespace(message=after, cached_message=app))
         seen = await self.answer(self.said("say congrats"))
         self.assertIn(("Milestone App", "[embed: Contribution milestone synthetic-user passed 2,000 contributions.]"), seen)
 
@@ -1050,7 +1113,7 @@ class NoContextThreadTests(_Handling):
         await self.answer(q, "Granite.")
         q.content = f"<@{self.user.id}> !nocontext favourite colour?"
         q.clean_content = discord.Message.clean_content.function(q)
-        await j.on_message_edit(q, q)
+        await j.on_raw_message_edit(SimpleNamespace(message=q, cached_message=q))
         self.assertEqual([e["content"] for e in j.channel_history[q.id]], ["@Testbot favourite colour?"])
         edit = rh.logs[q.id].events[-1]
         self.assertEqual((edit["type"], edit["text"]), ("edit", "@Testbot favourite colour?"))
@@ -1148,7 +1211,7 @@ class NoContextThreadTests(_Handling):
         rh.logs.clear()
         q.content = f"<@{self.user.id}> !nocontext what do you know about pip"
         q.clean_content = discord.Message.clean_content.function(q)
-        await j.on_message_edit(q, q)
+        await j.on_raw_message_edit(SimpleNamespace(message=q, cached_message=q))
         await j.on_raw_message_delete(SimpleNamespace(channel_id=self.channel.id, message_id=q.id))
         events = rh.logs[thread.id].events
         self.assertIn({"type": "edit", "on": 1, "text": "@Testbot what do you know about pip"},

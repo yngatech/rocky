@@ -41,6 +41,7 @@ HISTORY_SCAN = 400              # recent messages read to rebuild a channel's hi
 TO_BOT_KEPT = 7                 # messages to the bot kept in a channel's history past HISTORY_SCAN
 FILL_SCAN = 3000                # the most messages read back to fill a channel's new Rocky log (rocky_harness.FILL)
 CATCH_UP_WINDOW = 30            # minutes — on startup, answer each channel's latest message to the bot from this long ago that it missed
+EDIT_WAKES = 5                  # minutes — an edit that makes a message this recent one to the bot wakes it (on_raw_message_edit)
 STATUS_EVERY = 180              # minutes between new statuses — 0 to leave the status alone; /settings changes it
 STATUS_CHAT = 8                 # recent messages from the latest active channel, in view for every status — 0 for none
 STATUS_RECENT = 7               # its statuses from earlier days, in view so it doesn't say the same again
@@ -77,7 +78,12 @@ def kept(entries):
     return [e for e in entries if id(e) in keep]
 
 def add_history(ch_id, entry):
-    channel_history[ch_id] = kept(channel_history[ch_id] + [entry])
+    history = channel_history[ch_id]
+    # a message edited to the bot, already there as chatter, is answered as it is now, where it was
+    if (i := next((i for i, e in enumerate(history) if e.get("id") == entry["id"]), None)) is not None:
+        history[i] = entry
+        return entry
+    channel_history[ch_id] = kept(history + [entry])
     return entry
 
 # An emoji as the bot sees it: unicode as itself, the server's own by :name:
@@ -1046,10 +1052,26 @@ async def on_raw_bulk_message_delete(p):
     for i in p.message_ids:
         rh.deleted(p.channel_id, i)
 
-# Discord often adds a link's embed just after the message arrives, as an edit — and people fix typos
+# An edit that makes a message to the bot — its name added to a question it missed — wakes it, as if the message had
+# been sent that way: only when the edit is what does it, and only within EDIT_WAKES minutes of the message. Discord
+# often adds a link's embed just after the message arrives, as an edit, and people fix typos: a message that was to
+# the bot already had its turn. A reply out of nowhere to an old message would be wrong, so that's only recorded.
+# What it was is what the channel's history and Rocky's log have of it (the log outlasts a restart), not discord.py's
+# copy, which it only has for a message it saw arrive — so the history has it too.
+def edit_wakes(m):
+    if not should_respond(m) or rh.clock() - m.created_at > timedelta(minutes=EDIT_WAKES):
+        return False
+    entry = next((e for e in channel_history.get(m.channel.id, []) if e.get("id") == m.id), None)
+    was = [x for x in (entry and entry.get("to_bot"), rh.had(m)) if x is not None]
+    return bool(was) and not any(was)  # and if nothing knows what it was, it doesn't wake
+
+# The raw event: discord.py only calls on_message_edit for a message in its cache, not one sent before a restart
 @bot.event
-async def on_message_edit(before, after):
-    rh.edited(after)
+async def on_raw_message_edit(p):
+    after = p.message
+    wakes = edit_wakes(after)
+    # a !nocontext question is answered in a thread of its own, not in the channel's log
+    rh.edited(after, to_bot=wakes and not no_context(after))
     # a !nocontext message's is in its thread's
     entry = next((e for e in channel_history.get(after.channel.id, []) + channel_history.get(after.id, [])
                   if e.get("id") == after.id), None)
@@ -1057,6 +1079,8 @@ async def on_message_edit(before, after):
         entry["content"] = content
         entry["users"] = message_users(after, author_name=entry["name"])
         entry["roles"] = [r.name for r in after.role_mentions]
+    if wakes and not stopping.is_set():
+        await respond(after)
 
 
 # The actions on a message (right-click it, Apps): what the bot had in view for it (Context), what it cost (Stats) and
