@@ -1594,7 +1594,7 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
         turn = await rh.take_turn(chat, waking, bot_name, typing=where.typing)
     rh.changed(chat)  # saved whether or not it then posts: after a turn that only reacts, nothing else may change the log
     # its last request and what it answered, before a jump can drop any of it
-    sent = rh.render(chat, bot_name, until=turn.events[-1] if turn.events else waking)
+    sent = rh.render(chat, bot_name, until=turn.events[-1] if turn.events else turn.woke)
     if sent[(began := len(sent) - len(turn.events)) - 1]["role"] == "assistant":  # a status came after what woke it
         sent.insert(began, {"role": "user", "content": "(Your turn.)"})  # as take_turn sent it
     note(context=request_record(sent, 1 + len(turn.events), len(chat.shown) if chat.space else None))

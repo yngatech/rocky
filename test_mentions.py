@@ -669,7 +669,8 @@ class RockyHarnessTests(_Handling):
         asked = self.said("can you look in the back?", ping=False)
         await j.on_message(asked)
         llm = AsyncMock(return_value=answer("Rocky look. Back is empty, question."))
-        with patch.object(j, "llm_message", llm):
+        traces = []
+        with patch.object(j, "llm_message", llm), patch.object(j, "write_trace", traces.append):
             await j.on_raw_message_edit(edit(asked, "can you look in the back testbot?"))
         asked.reply.assert_awaited_once()  # a reply to the message itself
         self.assertEqual(asked.reply.call_args.args[0], "Rocky look. Back is empty, question.")
@@ -679,6 +680,11 @@ class RockyHarnessTests(_Handling):
         self.assertRegex(sent, rf'<message id="{n}" from="pip" at="[0-9:]+">can you look in the back\?</message>\n'
                                rf'<edit id="{n}" to="you" woke_you="yes">can you look in the back testbot\?</edit>$')
         self.assertTrue(j.channel_history[self.channel.id][-1]["to_bot"])
+        # and Context on the message shows the edit at the end of the turn's user block
+        [t] = traces
+        self.assertEqual(t["message_id"], asked.id)
+        self.assertIn('<edit id="1" to="you" woke_you="yes">can you look in the back testbot?</edit>\n```\n'
+                      "**assistant**", j.context_response(t, "Testbot")[0].description)
 
         # one that woke it by its name, and one it reacted to, woken by another
         named = self.said("testbot is the kettle on", ping=False)

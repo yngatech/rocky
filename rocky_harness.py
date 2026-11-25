@@ -429,6 +429,7 @@ class Turn:
     spoke: dict = None                             # the log's event for its message, to give it its Discord id
     requests: int = 0
     events: list = field(default_factory=list)     # its events in the log — its turns and their calls' results
+    woke: dict = None                              # what woke it: the message, or the edit that made it one to it
 
 
 def use(log, call, waking):
@@ -562,8 +563,8 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
     turn = Turn()
     # A message edited to be to it woke it with that edit, which is marked, not the message as it was first sent:
     # that line is in the cache, and stays as it was
-    woke = next((e for e in reversed(log.events) if e["type"] == "edit" and e["on"] == waking["n"] and e.get("to_bot")),
-                waking)
+    woke = turn.woke = next((e for e in reversed(log.events)
+                             if e["type"] == "edit" and e["on"] == waking["n"] and e.get("to_bot")), waking)
     # Already in one of its turns' requests, before what it said: it's had its answer. Its messages from outside a turn
     # (spoke_elsewhere) don't count — a status posted while a message waited doesn't answer it
     after = next((i for i, e in enumerate(log.events) if e is woke), len(log.events))
