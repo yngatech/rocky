@@ -51,11 +51,13 @@ def answer(text="", calls=(), reasoning=None):
                            for i, (name, args) in enumerate(calls)] or None}
 
 
-def completion(message, cost=.0016):
-    # OpenRouter's body for a chat completion: Rocky's message (answer()), with its usage and cost
+def completion(message, cost=.0016, cached=8000, written=None):
+    # OpenRouter's body for a chat completion: Rocky's message (answer()), with its usage and cost, and of its 9000
+    # input tokens how many were read from the cache and written to it
     return {"choices": [{"message": message, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
             "usage": {"prompt_tokens": 9000, "completion_tokens": 20, "cost": cost,
-                      "prompt_tokens_details": {"cached_tokens": 8000}}}
+                      "prompt_tokens_details": {"cached_tokens": cached,
+                                                **({"cache_write_tokens": written} if written is not None else {})}}}
 
 
 def session():

@@ -136,7 +136,7 @@ class StatusTests(_Case):
             self.assertLessEqual(len(mood), 128)
             if want:
                 self.assertEqual(mood, want)
-        self.assertIn("kettle: my cat knocked my tea over", self.trace["transcript"])
+        self.assertIn("kettle: my cat knocked my tea over", j.context_text(self.trace["context"]))
         self.assertEqual(self.trace["llm"], "rocky")
 
     async def test_a_status_sees_what_it_posted_on_earlier_days(self):
@@ -144,7 +144,7 @@ class StatusTests(_Case):
             with self.subTest(recent=recent), patch.object(j, "recent_statuses", recent), \
                     patch.object(j, "llm_message", AsyncMock(return_value={"content": "I'm thinking about soup."})):
                 await j.llm_status("rocky", "I'm thinking about", "kettle: soup tonight")
-            ask = self.trace["transcript"]
+            ask = j.context_text(self.trace["context"])
             self.assertEqual("earlier days" in ask, bool(recent))
             if recent:  # oldest first, before the chat the new one is about
                 self.assertLess(ask.index(recent[0]), ask.index(recent[1]))

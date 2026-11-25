@@ -29,7 +29,7 @@ LOG = {"channel": "bot-spam", "space": "400", "next_n": 3, "ids": {"900": 1, "90
 # A turn's line as rocky_bot writes it: the events' times come out as str() does them
 def trace(at, message_id, channel_id=300, **fields):
     return {"at": at, "channel": "bot-spam", "channel_id": channel_id, "message_id": message_id, "author": "pip",
-            "message": "rocky <3 soup?", "cost": 0.0004, "llm": "rocky", "history": ["big"], "transcript": "big",
+            "message": "rocky <3 soup?", "cost": 0.0004, "llm": "rocky", "history": ["big"], "context": {"messages": ["big"]},
             "rocky_events": [{"type": "rocky", "at": "2026-10-12 18:00:02.500000+00:00", "text": "Soup good."}], **fields}
 
 
@@ -69,7 +69,7 @@ class ViewerTests(unittest.IsolatedAsyncioTestCase):
         turn = body["turns"]["2026-10-12T18:00:02.500000+00:00"]
         self.assertEqual(turn["cost"], 0.0004)
         self.assertNotIn("history", turn)  # most of a line, and the log already shows what it saw
-        self.assertNotIn("transcript", turn)
+        self.assertNotIn("context", turn)
 
     async def test_it_answers_only_what_changed(self):
         r, _ = await self.get("/api/channels/300")

@@ -61,7 +61,7 @@ Rocky can ping people by writing `@` and their full display name (`@Pip Meadow, 
 
 Right-click (long-press on mobile) a reply, the message that woke Rocky, or a posted status and pick from **Apps** for answers only you see:
 
-- **Context**: what the bot had in view: the end of Rocky's log of the channel, its turn included, or what a status was asked, with the model and message count, and for an LLM turn its output tokens, input against the model's window, and cached versus uncached input, each with a text bar. A long transcript is attached as `context.txt`.
+- **Context**: the request the model was sent, a block for each message as it went: for Rocky's turn, the people's message that woke it, each of its messages with its tool calls' JSON, each tool's result and what it said; for a status, what it was asked and what it wrote. What came before is a line each: the system prompt by its length, `<memories>` by how many facts, and how many earlier messages, which are attached as `context.txt` with the turn. Neither the system prompt nor the memories are shown, nor what a note says, nor any thinking, only how many blocks there were. A block too long for Discord has its middle cut. Below are the model, message count, output tokens, input against the model's window, and the input cache: how much was read from it, written to it and neither. Turns logged before Context kept the request show the log as text.
 - **Stats**: the model, total recorded cost in USD (every logged attempt, including costs billed to a linked provider key), and context usage of the final request. For a Rocky turn, also the warm-ups that kept its cache warm since the turn before (below), and what they cost.
 - **Diagnostics**: request counts and purposes, elapsed time, model IDs, billing, cache and output details, retries, and why an LLM request stopped early (a refusal is also logged as a warning with its reason, provider and generation id, never what was said).
 
@@ -104,7 +104,7 @@ Set `STATUS_EVERY = 0`, or turn it off in `/settings`, to leave the status alone
 
 ## Logs
 
-Every message the bot handles is written as one JSON line to `logs/YYYY-MM-DD.jsonl`: who said what, the transcript Rocky saw, what it said and reacted with, every API call with its purpose and billing (why it stopped, the provider and the generation id), and the cost, including requests billed to our own Anthropic key, which OpenRouter reports as free (`byok_cost`). A Rocky turn keeps its events from Rocky's log in `rocky_events`. `logs/` holds what people said in the server, so it's gitignored: keep it local and delete old days whenever.
+Every message the bot handles is written as one JSON line to `logs/YYYY-MM-DD.jsonl`: who said what, the request Rocky was sent as Context shows it (`context`), what it said and reacted with, every API call with its purpose and billing (why it stopped, the provider and the generation id), and the cost, including requests billed to our own Anthropic key, which OpenRouter reports as free (`byok_cost`). A Rocky turn keeps its events from Rocky's log in `rocky_events`. `logs/` holds what people said in the server, so it's gitignored: keep it local and delete old days whenever.
 
 ### Rocky's logs
 

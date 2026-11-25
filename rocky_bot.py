@@ -315,10 +315,11 @@ async def llm_status(bot_name, opener, chat=""):
     ask = ((LLM_STATUS_RECENT.format(bot=bot_name, statuses="\n".join(recent_statuses)) if recent_statuses else "")
            + (f"Recent chat in the server:\n{chat}\n\n" if chat else "")
            + LLM_STATUS.format(bot=bot_name, start=opener))
-    note(transcript=ask, llm="rocky", llm_model=LLM_MODEL, llm_chat_chars=len(chat))
-    message = await llm_message([{"role": "system", "content": rocky_prompt(bot_name, shuffle=True)},
-                                 {"role": "user", "content": ask}])
+    note(llm="rocky", llm_model=LLM_MODEL, llm_chat_chars=len(chat))
+    sent = [{"role": "system", "content": rocky_prompt(bot_name, shuffle=True)}, {"role": "user", "content": ask}]
+    message = await llm_message(sent)
     text = (message or {}).get("content") or ""
+    note(context=request_record(sent + [{"role": "assistant", "content": text}], 2))
     mood = " ".join(clean_llm(text, bot_name).split())  # one line
     if not mood:
         return None
@@ -1090,18 +1091,131 @@ def answer_privately(interaction):
                                                allowed_mentions=discord.AllowedMentions.none())
     return send
 
-# Context: the transcript the bot had in view for one of its answers. For Rocky's turn, the end of its log; for a
-# status, what it was asked, with the recent chat. An answer logged without one (out of credit, say) has none to show.
-CONTEXT_LIMIT = 2000  # Discord's message length — a longer transcript goes as a file
+# Context: the request behind one of the bot's answers, a block for each of its messages as it was sent, from the
+# trace. For Rocky's turn, its last request and what it answered; for a status, what it was asked. An answer logged
+# without one (out of credit, say) has none to show. Traces from before had the log as text (transcript), shown as it is.
+CONTEXT_LIMIT = 2000      # an old trace's transcript, past Discord's message length, goes as a file
+DESCRIPTION_LIMIT = 4096  # Discord's, for an embed's description
+CONTEXT_KEPT = 40         # the messages its trace keeps, the turn's and those just before it, for Context's file
+CUT_MARK = 50             # room kept for the line that says a block's middle is cut
 
 # A code block in someone's message would open or end ours
 def unfence(text):
-    return text.replace("```", "`\u200b``")
+    return text.replace("``", "`\u200b`")
+
+def plural(n, word):
+    return f"{n:,} {word}{'' if n == 1 else 's'}"
+
+# A request as Context shows it, for the trace: each message as it was sent, but for what Context mustn't show — the
+# system prompt only by its length and <memories> by how many facts, a note without what it says, thinking and
+# pictures only by how many. sent: the request, system prompt first, then its answer; turn: how many messages at its
+# end are the turn's, the people's message that woke it first; memories: the facts in <memories>, if it has them.
+def request_record(sent, turn, memories=None):
+    names, messages = {}, []
+    for i, m in enumerate(sent):
+        content = m.get("content")
+        blocks = content if isinstance(content, list) else []
+        x = {"role": m["role"]}
+        if i == 0:
+            x["chars"] = len(text_of(content))
+        elif i == 1 and memories is not None:
+            x["facts"] = memories
+        elif text := text_of(content):
+            x["content"] = text
+        if any("cache_control" in b for b in blocks):
+            x["cached"] = True
+        if pictures := sum(b.get("type") == "image_url" for b in blocks):
+            x["pictures"] = pictures
+        if m.get("reasoning_details"):
+            x["thinking"] = len(m["reasoning_details"])
+        if m.get("tool_calls"):
+            x["calls"] = [{"name": c["function"]["name"]} | ({} if c["function"]["name"] == "note" else  # a secret
+                          {"arguments": c["function"]["arguments"]}) for c in m["tool_calls"]]
+            names |= {c["id"]: c["function"]["name"] for c in m["tool_calls"]}
+        if m["role"] == "tool":
+            x["name"] = names.get(m.get("tool_call_id"))
+        messages.append(x)
+    head = 1 + (memories is not None)
+    end = max(head, len(messages) - turn)
+    kept = messages[max(head, end - max(CONTEXT_KEPT - (len(messages) - end), 0)):end]
+    return {"messages": messages[:head] + kept + messages[end:], "earlier": end - head - len(kept),
+            "turn": head + len(kept)}
+
+# A message of the request as Context shows it, [(label, text, code block language)]: its own, then its tool calls'
+def pieces(m):
+    about = [m["role"]]
+    if "chars" in m:
+        about.append(f"{m['chars']:,} characters, not shown")
+    if "facts" in m:
+        about.append(f"<memories>: {plural(m['facts'], 'fact')}, not shown")
+    if m.get("name"):
+        about.append(f"{m['name']}'s result")
+    if m.get("pictures"):
+        about.append(plural(m["pictures"], "picture"))
+    if m.get("thinking"):
+        about.append(f"{plural(m['thinking'], 'thinking block')}, hidden")
+    if m.get("cached"):
+        about.append("cache breakpoint")
+    return [(" · ".join(about), m.get("content"), "")] + [
+        (f"↳ calls {c['name']}", c["arguments"], "json") if "arguments" in c else
+        (f"↳ calls {c['name']} · what it notes is secret", None, "") for c in m.get("calls", [])]
+
+def bold(label):
+    first, *rest = label.split(" · ")
+    return " · ".join([f"**{first}**", *rest])
+
+# The whole request as text, for context.txt: a label over each block, since code blocks mean nothing in a file
+def context_text(c):
+    out, head = [], sum("chars" in m or "facts" in m for m in c["messages"])
+    for i, m in enumerate(c["messages"]):
+        if i == head and c["earlier"]:
+            out.append(f"── {plural(c['earlier'], 'earlier message')}, not kept here ──")
+        if i == c["turn"]:
+            out.append("════ this turn ════")
+        out += [f"── {label} ──" + (f"\n{text}" if text else "") for label, text, _ in pieces(m)]
+    return "\n\n".join(out)
+
+# text in n characters, its middle cut out and said so
+def middle_cut(text, n):
+    keep = max(n - CUT_MARK, 0)
+    return (f"{text[:keep // 2]}\n… {len(text) - keep:,} characters cut, all in context.txt …\n"
+            f"{text[len(text) - keep + keep // 2:]}")
+
+# The embed's description, and whether it has everything: what came before as a line each, then this turn's blocks,
+# the longest cut to the same length to fit Discord's limit
+def context_description(c):
+    messages, turn = c["messages"], c["turn"]
+    head = [m for m in messages[:turn] if "chars" in m or "facts" in m]
+    lines = [bold(pieces(m)[0][0]) for m in head]
+    if earlier := c["earlier"] + turn - len(head):
+        lines.append(f"**{plural(earlier, 'earlier message')}** · "
+                     + (f"the last {turn - len(head)} in context.txt" if c["earlier"] else "in context.txt"))
+    shown = [p for m in messages[turn:] for p in pieces(m)]
+    texts = [unfence(text) if text else None for _, text, _ in shown]
+
+    def write(texts):
+        blocks = [bold(label) + (f"\n```{language}\n{text}\n```" if text is not None else "")
+                  for (label, _, language), text in zip(shown, texts)]
+        return "\n".join(lines) + "\n\n" + "\n".join(blocks)
+    room = DESCRIPTION_LIMIT - len(write(["" if t is not None else None for t in texts]))
+    lengths, cap = sorted(len(t) for t in texts if t), None
+    for i, n in enumerate(lengths):  # the shortest whole, while the rest's share of what's left is longer
+        if n * (len(lengths) - i) > room:
+            cap = room // (len(lengths) - i)
+            break
+        room -= n
+    if cap is not None:
+        texts = [middle_cut(t, cap) if t and len(t) > cap else t for t in texts]
+    description = write(texts)
+    if len(description) > DESCRIPTION_LIMIT:  # too many blocks to show any of them
+        return "\n".join(lines) + "\n\nThis turn is too long to show here: it's in context.txt.", False
+    return description, cap is None and not earlier
 
 # The Context action's answer for `target`, through send(content=None, embed=None, files=None)
 async def explain_context(channel_id, guild, target, send):
     t = await asyncio.to_thread(find_trace, channel_id, target,
-                                lambda t: (t.get("reply") or t.get("reaction") or t.get("status")) and t.get("transcript"))
+                                lambda t: (t.get("reply") or t.get("reaction") or t.get("status"))
+                                and (t.get("context") or t.get("transcript")))
     if t is None:
         await send("Nothing logged for that")
         return
@@ -1150,19 +1264,23 @@ def money(cost):
     return f"${cost:.6f} USD" if cost is not None else "Not recorded"
 
 
-# One embed: the transcript, then the logged counts as fields, with text bars for the window and cache. A long
-# transcript is attached instead, which Discord shows above the embed and can open without downloading — so it's
-# uploaded again each time rather than cached as a link.
+# One embed: the request, then the logged counts as fields, with text bars for the window and cache. What doesn't fit
+# is attached, which Discord shows above the embed and can open without downloading — so it's uploaded again each
+# time rather than cached as a link.
 def context_response(t, bot_name):
-    text = t["transcript"]
     tokens, window, cached = t.get("llm_prompt_tokens"), t.get("llm_window"), t.get("llm_cached_tokens")
     files = []
-    if len(text) <= CONTEXT_LIMIT:
+    if c := t.get("context"):
+        description, whole = context_description(c)
+        if not whole:
+            files.append(("context.txt", context_text(c).encode()))
+    # without <memories>, which it had when the log was short
+    elif len(text := re.sub(r"^<memories>\n.*?\n</memories>\n?", "", t["transcript"], flags=re.S)) <= CONTEXT_LIMIT:
         description = f"```\n{unfence(text)}\n```"
     else:
         description = None
         files.append(("context.txt", text.encode()))
-    embed = discord.Embed(title=f"What {bot_name} saw", description=description, color=EXPLANATION_COLOR)
+    embed = discord.Embed(title=f"What {bot_name} was sent", description=description, color=EXPLANATION_COLOR)
     embed.add_field(name="Model", value=model_label(t))
     if (count := t.get("llm_messages")) is not None:
         embed.add_field(name="Chat messages", value=f"{count:,}")
@@ -1175,11 +1293,15 @@ def context_response(t, bot_name):
         else:
             usage = f"{tokens:,} tokens"
         embed.add_field(name="Context window", value=usage, inline=False)
-        # Cached tokens are part of the input, rather than extra window usage
+        # Part of the input, rather than extra window usage: read from the cache, written to it for the next request
+        # (all of it, the first time after the system prompt changes), or neither
         if cached is not None and 0 <= cached <= tokens:
-            embed.add_field(name="Input cache", value=f"{text_bar(cached, tokens)} {percentage(cached, tokens)} · "
-                                                      f"{cached:,} cached · {tokens - cached:,} uncached",
-                            inline=False)
+            written = t.get("llm_cache_write_tokens")
+            counts = [f"{cached:,} read", *([f"{written:,} written"] if written is not None else [])]
+            if (rest := tokens - cached - (written or 0)) >= 0:
+                counts.append(f"{rest:,} uncached")
+            embed.add_field(name="Input cache", value=f"{text_bar(cached, tokens)} {percentage(cached, tokens)} read\n"
+                                                      + " · ".join(counts), inline=False)
     if t.get("no_context"):
         embed.set_footer(text="!nocontext · this thread")
     return embed, files
@@ -1446,8 +1568,13 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
     async with gen_lock:  # no typing while it decides — it may only react (take_turn)
         turn = await rh.take_turn(chat, waking, bot_name, typing=where.typing)
     rh.changed(chat)  # saved whether or not it then posts: after a turn that only reacts, nothing else may change the log
+    # its last request and what it answered, before a jump can drop any of it
+    sent = rh.render(chat, bot_name, until=turn.events[-1] if turn.events else waking)
+    if sent[(began := len(sent) - len(turn.events)) - 1]["role"] == "assistant":  # a status came after what woke it
+        sent.insert(began, {"role": "user", "content": "(Your turn.)"})  # as take_turn sent it
+    note(context=request_record(sent, 1 + len(turn.events), len(chat.shown) if chat.space else None))
     rh.jump(chat)
-    note(llm="rocky", llm_model=LLM_MODEL, transcript=rh.readable(chat, bot_name, last=40),
+    note(llm="rocky", llm_model=LLM_MODEL,
          llm_messages=sum(e["type"] == "message" for e in chat.events), harness_requests=turn.requests,
          memory_kept=[list(k) for k in turn.kept],
          # a look's pictures stay in Rocky's log, and are only counted here: logs/ keeps every day
