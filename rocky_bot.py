@@ -545,7 +545,7 @@ NO_CONTEXT = re.compile(r"(?<!\S)!nocontext(?!\S)[ \t]*", re.IGNORECASE)
 # The link back that the bot's replies in side conversations (before threads) ended with is UI, never model context.
 SIDE_LINK = re.compile(r" \[↳(?: thread)?\]\(https://discord\.com/channels/(?:@me|\d+)/\d+/\d+\)$")
 # So are the lines under Rocky's messages saying what it did (action_lines)
-ACTION_LINES = re.compile(r"^-# (?:🍺 ordered|🧠 remembered:|🗑️ forgot:) .*$\n?", re.MULTILINE)
+ACTION_LINES = re.compile(r"^-# (?:🍺|👀|📝|🧠|🗑️) .*$\n?", re.MULTILINE)
 
 def no_context(m):  # not in a !nocontext thread, which it carries on
     return should_respond(m) and NO_CONTEXT.search(strip_mention(m)) is not None and not rh.no_memories(m.channel)
@@ -1371,16 +1371,35 @@ def message_parts(text, limit=MESSAGE_LIMIT):
         text = text[cut:].strip()
     return [*parts, text]
 
-# What Rocky did besides talking, a subtext line each under its message: what it ordered, remembered and forgot. Not
-# its notes, which are secret. Only under a message, and not in its log — it has its calls there.
+# What Rocky did besides talking, a subtext line each under its message, in the order it did them: everything but its
+# reactions, which are seen anyway, and what it noted, which is secret. Only under a message, and not in its log — it
+# has its calls there. Each is one line whatever it wrote in a call, so ACTION_LINES takes all of it out again.
 def action_lines(shown):
     lines = []
     for kind, a, b in shown:
+        a, b = (" ".join(x.split()) if isinstance(x, str) else x for x in (a, b))
+        fact = " ".join(b.split(": ", 1)) if isinstance(b, str) else None  # "pip: likes lager" as "pip likes lager"
         if kind == "order":
-            lines.append(f"-# 🍺 ordered {a}" + (f" for {b}" if b else ""))
-        else:
-            about, _, fact = b.partition(": ")
-            lines.append(f"-# {'🧠 remembered' if kind == 'remember' else '🗑️ forgot'}: {about} {fact}")
+            line = f"🍺 ordered {a}" + (f" for {b}" if b else "")
+        elif kind == "unordered":
+            line = f"🍺 couldn't order {a or 'a drink'}: {b}"
+        elif kind == "bar":
+            line = f"🍺 checked the bar: {a}"
+            if f"-# {line}" in lines:  # it sometimes looks twice in a turn: the second says nothing new
+                continue
+        elif kind == "look":
+            line = f"👀 looked at {'the picture' if b == 1 else f'{b} pictures'}" if b else "👀 couldn't see a picture"
+        elif kind == "note":
+            line = "📝 made a note"
+        elif kind == "remember":
+            line = f"🧠 remembered: {fact}"
+        elif kind == "known":
+            line = f"🧠 already knew: {fact}"
+        elif kind == "unremembered":
+            line = f"🧠 couldn't remember that about {b}"
+        else:  # forget
+            line = f"🗑️ forgot: {fact}" if fact else "🗑️ couldn't forget: no such memory"
+        lines.append(f"-# {line}")
     return lines
 
 # Rocky takes its turn in the channel's log (rocky_harness) — its message, its reactions on any message

@@ -417,7 +417,7 @@ class Turn:
     text: str = ""
     reactions: list = field(default_factory=list)  # [(message n, emoji)]
     kept: list = field(default_factory=list)       # what remember and forget did
-    shown: list = field(default_factory=list)      # what it did that's shown under its message: kept, and orders
+    shown: list = field(default_factory=list)      # its calls that are shown under its message (rocky_bot.action_lines)
     spoke: dict = None                             # the log's event for its message, to give it its Discord id
     requests: int = 0
     events: list = field(default_factory=list)     # its events in the log — its turns and their calls' results
@@ -438,10 +438,10 @@ def use(log, call, waking):
             # Its thinking once spilled into a fact ("favourite film is Rocky — no, Project Hail Mary? Avoid; keep
             # simple"), and was kept twice
             if len(fact["fact"]) > FACT_CHARS or "?" in fact["fact"]:
-                return None, f"Not kept: one short, settled fact, under {FACT_CHARS} characters."
+                return ("unremembered", None, fact["about"]), f"Not kept: one short, settled fact, under {FACT_CHARS} characters."
             if same := next((x for x in kept["facts"] if (x["about"].lower(), x["fact"].lower()) ==
                              (fact["about"].lower(), fact["fact"].lower())), None):
-                return None, f"Already remembered as [{same['n']}]."
+                return ("known", same["n"], f"{same['about']}: {same['fact']}"), f"Already remembered as [{same['n']}]."
             kept["next"] += 1
             kept["facts"].append(fact)
             memories_changed()
@@ -454,19 +454,22 @@ def use(log, call, waking):
                 memories_changed()
             return ("forget", n, gone and f"{gone['about']}: {gone['fact']}"), "Forgot it." if gone else "No such fact."
         if f.get("name") == "note":
-            # its call in the log is the note
-            return None, "Noted." if str(args.get("text") or "").strip() else "Nothing to note."
+            if not str(args.get("text") or "").strip():
+                return None, "Nothing to note."
+            return ("note", None, None), "Noted."  # its call in the log is the note, and only there
         if f.get("name") == "bar":
-            return None, bar_state()[1]
+            says = bar_state()[1]
+            return ("bar", says.split(" Menu:")[0], None), says
         if f.get("name") == "order":
             is_open, says = bar_state()
+            asked = str(args.get("drink") or "").strip()
+            drink, who = menu_drink(asked), str(args.get("for") or "").strip().lstrip("@")
             if not is_open:
-                return None, says
-            drink, who = menu_drink(str(args.get("drink") or "")), str(args.get("for") or "").strip().lstrip("@")
+                return ("unordered", drink or asked, says), says
             if not drink:
-                return None, f"Not on the menu. {says}"
+                return ("unordered", asked, "not on the menu"), f"Not on the menu. {says}"
             if drink == bar_today(clock().astimezone(j.TIMEZONE).date())[1]:
-                return None, f"The {drink}'s run out today. {says}"
+                return ("unordered", drink, "it's run out today"), f"The {drink}'s run out today. {says}"
             return ("order", drink, who or None), f"Ordered: {drink}{f' for {who}' if who else ''}, £{MENU[drink]:.2f}."
         return None, f"No tool called {f.get('name')!r}."
     except (ValueError, KeyError, TypeError) as e:
@@ -604,16 +607,16 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
                     on, result, found = await look(log, c["arguments"], waking)
                     turn.events.append(log.add("result", after=turn.events[-1], id=c["id"], content=result, on=on,
                                                pictures=found))
+                    turn.shown.append(("look", on, len(found)))
                     continue
                 done, result = use(log, {"function": {"name": c["name"], "arguments": c["arguments"]}}, waking)
                 turn.events.append(log.add("result", after=turn.events[-1], id=c["id"], content=result))
                 if done and done[0] == "react":
                     turn.reactions.append(done[1:])
                 elif done:
-                    if done[0] != "order":
+                    if done[0] in MEMORY_CALLS:
                         turn.kept.append(done)
-                    if done[2]:  # not a forget of no fact
-                        turn.shown.append(done)
+                    turn.shown.append(done)
             if text:
                 turn.text, turn.spoke = text, e
                 break

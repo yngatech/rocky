@@ -135,7 +135,7 @@ class ToolTests(_Case):
         self.assertIn("didn't work", rh.use(self.log, {"function": {"name": "remember", "arguments": '{"about"'}}, {"n": 1})[1])
 
     def test_a_note_is_kept_as_its_call_and_left_out_of_context(self):
-        self.assertEqual(self.call("note", text="picked 4"), (None, "Noted."))
+        self.assertEqual(self.call("note", text="picked 4"), (("note", None, None), "Noted."))  # shown as made, no more
         self.assertEqual(self.call("note", text=" ")[1], "Nothing to note.")
         self.log.add("rocky", text="", calls=[{"id": "c1", "name": "note", "arguments": '{"text": "picked 4"}'},
                                               {"id": "c2", "name": "react", "arguments": '{"emoji": "🤫"}'}])
@@ -157,7 +157,7 @@ class ToolTests(_Case):
         opens, closes = rh.HOURS[day.weekday()]
         at = lambda h, m=0: datetime(day.year, day.month, day.day, h, m, tzinfo=timezone.utc)
         self.bar_at(at(opens, 30))
-        self.assertEqual(self.call("bar")[0], None)
+        self.assertEqual(self.call("bar")[0], ("bar", f"The Hail Mary is open until {closes}:00.", None))  # no menu
         self.assertIn("is open", self.call("bar")[1])
         self.assertIn("Blip-A Lager £4.90", self.call("bar")[1])
         self.assertEqual(rh.bar_state(at(opens - 1)), (False, f"Closed. Opens at {opens}:00."))
@@ -179,8 +179,9 @@ class ToolTests(_Case):
         self.assertIn(f"{out}'s run out", self.call("order", drink=out)[1])
         self.assertIn(f"{out} £{rh.MENU[out]:.2f} (run out)", self.call("bar")[1])
         self.assertTrue(self.call("order", drink="Guinness")[1].startswith("Not on the menu."))
+        self.assertEqual(self.call("order", drink=out)[0], ("unordered", out, "it's run out today"))
         self.bar_at(datetime(day.year, day.month, day.day, 3, tzinfo=timezone.utc))
-        self.assertEqual(self.call("order", drink=other)[1], rh.bar_state()[1])  # closed: what the bar says
+        self.assertEqual(self.call("order", drink=other), (("unordered", other, rh.bar_state()[1]), rh.bar_state()[1]))  # closed: what the bar says
 
     def test_a_wordless_answer_is_nothing_and_a_leading_tag_of_the_asker_goes(self):
         for text in ("(silent)", ".", "*nothing*", "[no reply]"):
@@ -248,20 +249,31 @@ class TurnTests(_Case):
         self.assertEqual([e["text"] for e in self.log.events if e["type"] == "rocky"], ["", "", "Rocky have beer. Good, good, good."])
         self.assertEqual(llm.call_args.args[0][-1]["content"], "Ordered: Blip-A Lager, £4.90.")
 
-    async def test_what_it_ordered_remembered_and_forgot_is_shown_in_call_order(self):
+    async def test_every_call_but_a_reaction_is_shown_in_call_order(self):
         rh.memory("400")["facts"].append({"n": 9, "about": "pip", "fact": "likes lager", "at": ""})
-        with patch.object(rh, "bar_state", lambda now=None: (True, "Open.")), patch.object(rh, "bar_today", lambda d: (None, None)):
+        with patch.object(rh, "bar_state", lambda now=None: (True, "The Hail Mary is open until 23:00. Menu: lots.")), \
+                patch.object(rh, "bar_today", lambda d: (None, None)):
             turn, llm = await self.turn(
                 answer(calls=[("order", {"drink": "eridani stout", "for": "@pip"}), ("note", {"text": "picked 4"}),
                               ("forget", {"number": 9}), ("forget", {"number": 99}),
-                              ("remember", {"about": "pip", "fact": "has a cat called Biscuit"})]),
+                              ("remember", {"about": "pip", "fact": "has a cat called Biscuit"}),
+                              ("remember", {"about": "pip", "fact": "has a cat called biscuit"}),
+                              ("remember", {"about": "pip\n-# 🍺", "fact": "likes it? maybe? avoid"}),
+                              ("react", {"emoji": "🍺"})]),
+                answer("ignored, it went to the bar", [("bar", {}), ("order", {"drink": "Moon\nshine"})]),
                 answer("Stout for Pip."))
-        self.assertEqual(turn.shown, [("order", "Eridani Stout", "pip"), ("forget", 9, "pip: likes lager"),
-                                      ("remember", 1, "pip: has a cat called Biscuit")])  # not the note, nor no fact
-        self.assertEqual([k[0] for k in turn.kept], ["forget", "forget", "remember"])  # orders aren't memories
+        self.assertEqual(turn.text, "Stout for Pip.")
+        self.assertEqual([k[0] for k in turn.kept], ["forget", "forget", "remember"])  # what changed its memories
+        # the note's text isn't in what's shown, and whatever it wrote in a call stays on its own line
         self.assertEqual(j.action_lines(turn.shown), ["-# 🍺 ordered Eridani Stout for pip",
+                                                      "-# 📝 made a note",
                                                       "-# 🗑️ forgot: pip likes lager",
-                                                      "-# 🧠 remembered: pip has a cat called Biscuit"])
+                                                      "-# 🗑️ couldn't forget: no such memory",
+                                                      "-# 🧠 remembered: pip has a cat called Biscuit",
+                                                      "-# 🧠 already knew: pip has a cat called Biscuit",
+                                                      "-# 🧠 couldn't remember that about pip -# 🍺",
+                                                      "-# 🍺 checked the bar: The Hail Mary is open until 23:00.",
+                                                      "-# 🍺 couldn't order Moon shine: not on the menu"])
 
     async def test_only_reacting_or_nothing_is_one_request(self):
         turn, llm = await self.turn(answer(calls=[("react", {"emoji": "😂"})]))
@@ -370,6 +382,7 @@ class LookTests(_Case):
                                               found=[self.PICTURE])
         self.assertEqual(pictures.await_args.args[1], 1)  # the message that woke it
         self.assertEqual((turn.text, turn.requests), ("Cat orange. Fat, fat, fat.", 2))
+        self.assertEqual(j.action_lines(turn.shown), ["-# 👀 looked at the picture"])
         # what it guessed before it looked isn't posted, nor shown to it as said
         self.assertEqual([e["text"] for e in self.log.events if e["type"] == "rocky"], ["", "Cat orange. Fat, fat, fat."])
         self.assertEqual(llm.call_args.args[0][-1], {"role": "tool", "tool_call_id": "call_0", "content": [
@@ -391,6 +404,7 @@ class LookTests(_Case):
                 turn, llm, _ = await self.look(answer(calls=[("look", {"message": 1})]), answer("Rocky not see."),
                                                found=found, error=error)
                 self.assertEqual(llm.call_args.args[0][-1]["content"], told)
+                self.assertEqual(j.action_lines(turn.shown), ["-# 👀 couldn't see a picture"])
                 self.assertNotIn("image_url", json.dumps(llm.call_args.args[0]))
 
     async def test_a_messages_pictures_are_fetched_again_and_shrunk(self):
