@@ -1421,6 +1421,7 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
         return
     async with gen_lock:  # no typing while it decides — it may only react (take_turn)
         turn = await rh.take_turn(chat, waking, bot_name, typing=where.typing)
+    rh.changed(chat)  # saved whether or not it then posts: after a turn that only reacts, nothing else may change the log
     rh.jump(chat)
     note(llm="rocky", llm_model=LLM_MODEL, transcript=rh.readable(chat, bot_name, last=40),
          llm_messages=sum(e["type"] == "message" for e in chat.events), harness_requests=turn.requests,
