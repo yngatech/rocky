@@ -46,7 +46,7 @@ class StatusUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((t["status"], t["llm"], t["requests"]), (mood, "rocky", 1))
         self.assertAlmostEqual(t["cost"], .0004)
         self.assertEqual([c["purpose"] for c in t["api_calls"]], ["status"])
-        self.assertIn("Speaker: dinner tonight", t["transcript"])
+        self.assertIn("Speaker: dinner tonight", j.context_text(t["context"]))
         self.assertNotIn("status_attempts", t)
         self.assertEqual(self.saved_recent, self.recent[1:] + [mood])  # the oldest makes room
         self.assertFalse(j.heard)

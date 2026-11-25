@@ -26,7 +26,7 @@ STATIC = HERE / "viewer"
 PORT = 8350
 TURN_PAGE = 50  # turns per page in the Turns view
 
-# A turn's line in logs/, for the page: what woke it, what it did, and what it cost. history and transcript are left
+# A turn's line in logs/, for the page: what woke it, what it did, and what it cost. history and context are left
 # out — the log already shows what it saw, and they're most of a line's size.
 TURN_FIELDS = ["at", "channel", "channel_id", "message_id", "author", "message", "reply", "sent", "reply_id", "reaction",
                "cost", "byok_cost", "seconds", "requests", "llm_model", "llm_prompt_tokens", "llm_cached_tokens",

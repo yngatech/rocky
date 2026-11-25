@@ -539,7 +539,7 @@ class RockyHarnessTests(_Handling):
         self.assertEqual(log.ids[str(self.sent.id)], "you")
         self.assertEqual(rh.memory("400")["facts"][0]["fact"], "has a cat called Biscuit")
         self.assertEqual((self.trace["llm"], self.trace["reply"], self.trace["reaction"]), ("rocky", "@pip Biscuit. Good name.", "🐱"))
-        self.assertIn("my cat is called biscuit", self.trace["transcript"])
+        self.assertIn("my cat is called biscuit", j.context_text(self.trace["context"]))
         self.assertEqual(j.channel_history[self.channel.id][-1]["reply"], "Biscuit. Good name.")
 
         # what happens to Rocky's message next is in the log too
@@ -929,7 +929,7 @@ class AppHistoryTests(_Handling):
         self.assertIn('from="Milestone App"', chat)
         self.assertIn(">[embed: Contribution milestone synthetic-user passed 1,000 contributions.]</message>", chat)
         self.assertIn("say congrats", chat)
-        self.assertIn("[embed: Contribution milestone synthetic-user passed 1,000 contributions.]", self.trace["transcript"])
+        self.assertIn("[embed: Contribution milestone synthetic-user passed 1,000 contributions.]", j.context_text(self.trace["context"]))
         self.assertEqual(question.reply.call_args.args[0], "Congrats, synthetic-user!")
 
     async def test_app_posts_rebuilt_after_restart_and_own_status_excluded(self):

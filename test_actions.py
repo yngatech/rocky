@@ -46,15 +46,16 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         # pip asks and Rocky answers: plainly, after a tool round trip, after a secret note and a look at the bar, and
         # at length; then a status, and out of credit. Each message pip sent, with what the bot posted in answer, and
         # the status.
-        said = [await self.message("which rock is best", (200, completion(answer(
-                    "Granite. Strong, strong, strong.", [("react", {"emoji": "🪨"})])))),
+        said = [await self.message("which rock is best", (200, completion(answer(  # the first, so nothing to read
+                    "Granite. Strong, strong, strong.", [("react", {"emoji": "🪨"})]), cached=0, written=8990))),
                 await self.message("my cat is called biscuit", (200, completion(answer(
                     calls=[("remember", {"about": "pip", "fact": "has a cat called Biscuit"})]))),
                     (200, completion(answer("Biscuit. Good name."))))]
         said.append(await self.message("pick a number, and is the bar open?", (200, completion(answer(
-            "Seven! Bar open!", [("note", {"text": "picked 7"}), ("bar", {})]))),  # written before it knew
+            "Seven! Bar open!", [("note", {"text": "picked 7"}), ("bar", {})],  # written before it knew
+            reasoning=[{"type": "reasoning.text", "text": "seven, they said", "signature": "synthetic"}]))),
             (200, completion(answer("Rocky pick number. Secret. Bar closed until four, sad sad sad.")))))
-        said.append(await self.message("tell me everything about granite", (200, completion(answer(LONG)))))
+        said.append(await self.message(f"tell me everything about granite. {LONG}", (200, completion(answer(LONG)))))
         j.heard = True
         with openrouter((200, completion(answer("I feel granite is best rock."), cost=.0004))):
             await j.update_status.coro()
@@ -109,7 +110,7 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
                           ("message", "@Rocky my cat is called biscuit"), ("rocky", "Biscuit. Good name."),
                           ("message", "@Rocky pick a number, and is the bar open?"),
                           ("rocky", "Rocky pick number. Secret. Bar closed until four, sad sad sad."),
-                          ("message", "@Rocky tell me everything about granite"), ("rocky", LONG),
+                          ("message", f"@Rocky tell me everything about granite. {LONG}"), ("rocky", LONG),
                           ("message", "@Rocky and basalt?"), ("message", "@Rocky hello?")])
         self.assertEqual({int(k) for k, v in saved["ids"].items() if v == "you"},
                          {m.id for m in plain_reply + remembered_reply + secret_reply + parts})
@@ -151,8 +152,15 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_actions_explain_what_was_posted(self):
         answered, status = await self.conversation()
-        (plain, [reply]), (_, [with_actions]), _, (_, [first, second]), (_, [gif]), (_, [gif_again]) = answered
+        (plain, [reply]), (_, [with_actions]), (_, [secret]), (_, [first, second]), (_, [gif]), (_, [gif_again]) = answered
+        # and a turn logged before Context kept the request, with the log as text
+        old = self.discord.post(plain.channel, "Old answer.", self.discord.me)
+        with open(j.LOG_DIR / f"{old.created_at:%Y-%m-%d}.jsonl", "a") as f:
+            f.write(json.dumps({"at": old.created_at.isoformat(), "channel_id": old.channel.id, "message_id": 1,
+                                "reply": "Old answer.", "reply_id": old.id, "llm_model": j.LLM_MODEL,
+                                "transcript": "<memories>\n[1] pip: likes soup\n</memories>\n<message id=\"1\" from=\"pip\">hi</message>\nrocky: Old answer."}) + "\n")
         targets = {"plain reply": reply, "message that woke it": plain, "reply with action lines": with_actions,
+                   "reply after a note and the bar": secret, "old answer": old,
                    "long reply's first part": first, "its second part": second, "status": status,
                    "out-of-credit gif": gif, "gif while still out of credit": gif_again}
         answers = {}  # (Context, Stats, Diagnostics) for each: (text, embed, attached files)
@@ -169,13 +177,54 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
                          {name: ["Nothing logged for that"] if name == "gif while still out of credit" else []
                           for name in targets})
 
-        self.assertIn("which rock is best", answers["plain reply"][0][1]["description"])
+        # Context: the request as it was built, a block per message. What came before is only said, with the system
+        # prompt and memories by their size; this turn's messages are in full
+        def context(name):
+            text, embed, files = answers[name][0]
+            labels = [line for line in embed["description"].splitlines() if line.startswith("**")]
+            return embed, labels, files.get("context.txt", b"").decode()
+        embed, labels, file = context("plain reply")
+        self.assertRegex(labels[0], r"^\*\*system\*\* · [\d,]+ characters, not shown · cache breakpoint$")
+        self.assertEqual(labels[1:], ["**user** · <memories>: 0 facts, not shown · cache breakpoint",
+                                      "**user** · cache breakpoint", "**assistant**", "**↳ calls react**",
+                                      "**tool** · react's result"])
+        self.assertIn('woke_you="yes">@Rocky which rock is best</message>\n```', embed["description"])
+        self.assertIn('```json\n{"emoji": "\\ud83e\\udea8"}\n```', embed["description"])  # as the API had it
+        self.assertEqual(file, "")  # all of it is there
+        # The first request read nothing from the cache, and wrote it all for the next
+        self.assertEqual(fields("plain reply", 0)["Input cache"].splitlines()[1], "0 read · 8,990 written · 10 uncached")
+        self.assertEqual(fields("reply with action lines", 0)["Input cache"].splitlines()[1], "8,000 read · 1,000 uncached")
+
+        # A round trip: the call, its result, then what it said. A note shows it was made, never what it says, and
+        # thinking only that there was some
+        embed, labels, file = context("reply after a note and the bar")
+        self.assertEqual(labels[2:], ["**7 earlier messages** · in context.txt", "**user** · cache breakpoint",
+                                      "**assistant** · 1 thinking block, hidden", "**↳ calls note** · what it notes is secret",
+                                      "**↳ calls bar**", "**tool** · note's result", "**tool** · bar's result", "**assistant**"])
+        self.assertTrue(embed["description"].endswith(
+            "**assistant**\n```\nRocky pick number. Secret. Bar closed until four, sad sad sad.\n```"))
+        self.assertIn("my cat is called biscuit", file)  # the earlier messages, as labelled blocks
+        self.assertIn("── tool · remember's result ──\nRemembered as [1].", file)
+        for shown in (embed["description"], file):
+            self.assertNotIn("picked 7", shown)
+            self.assertNotIn("seven, they said", shown)
+        # A turn too long to show whole has the middle of its longest blocks cut, and all of it attached
+        embed, labels, file = context("long reply's first part")
+        self.assertIn("characters cut, all in context.txt", embed["description"])
+        self.assertLessEqual(len(embed["description"]), 4096)
+        self.assertIn(LONG, file)
+        # A status: what it was asked, and what it wrote
+        embed, labels, file = context("status")
+        self.assertEqual([label.split(" · ")[0] for label in labels], ["**system**", "**user**", "**assistant**"])
+        self.assertIn("I feel granite is best rock.", embed["description"])
+        # An old trace's log as text, as Context showed it then, but for what Rocky remembers
+        self.assertEqual(context("old answer")[0]["description"],
+                         '```\n<message id="1" from="pip">hi</message>\nrocky: Old answer.\n```')
+
         self.assertEqual(fields("plain reply", 1)["Model"], j.LLM_MODEL)
         self.assertEqual(answers["message that woke it"], answers["plain reply"])
-        self.assertIn("my cat is called biscuit", answers["reply with action lines"][0][1]["description"])
         self.assertEqual(fields("reply with action lines", 1)["Total cost"], "$0.003200 USD")
         self.assertIn("Rocky · 2 requests", fields("reply with action lines", 2)["Write the reply"])
-        self.assertIn("tell me everything about granite", answers["long reply's first part"][0][2]["context.txt"].decode())
         self.assertEqual(answers["its second part"], answers["long reply's first part"])
         self.assertIn("Rocky · 1 request", fields("status", 2)["Write the status"])
 
