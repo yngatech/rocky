@@ -39,7 +39,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         (self.live / "rocky_body.txt").write_text("# a comment\n\nHe has five legs\nand five hands.\n\nNo face.\n")
         isolate_rocky(self, d.name)  # put back after, as the replay points them at its copy
         patch_all(self, [(rh, "save_log", rh.save_log), (rh, "save_memories", rh.save_memories), (rh, "clock", rh.clock),
-                         (rh, "pictures", rh.pictures), (j, "ROCKY_LINES", []), (j, "ROCKY_BODY", []), (j, "HEADERS", dict(j.HEADERS)),
+                         (rh, "pictures", rh.pictures), (j, "ROCKY_LINES", []), (j, "ROCKY_BODY", []), (j, "client", j.client),
                          (j, "TIMEZONE", j.ZoneInfo("UTC")), (rocky_replay, "live_dir", lambda: self.live)])
         self.before = {p: p.read_text() for p in self.live.rglob("*") if p.is_file()}
 
@@ -47,7 +47,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         llm = AsyncMock(side_effect=lambda *a, **k: answer("Soup good.", [("remember", {"about": "pip", "fact": "is hungry"})]))
         out = io.StringIO()
         with patch.object(j, "llm_message", llm), patch.object(sys, "argv", ["rocky_replay.py", *argv]), \
-                patch.dict(os.environ, env or {"OPENROUTER_API_KEY_EVAL": "eval-key"}), contextlib.redirect_stdout(out):
+                patch.dict(os.environ, env or {"ANTHROPIC_API_KEY_EVAL": "eval-key"}), contextlib.redirect_stdout(out):
             await rocky_replay.main()
         return llm, out.getvalue()
 
@@ -55,34 +55,34 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         llm, out = await self.run_main("--channel", str(CHANNEL), "-n", "2", "rocky soup?")
         self.assertEqual(llm.await_count, 2)
         for call in llm.await_args_list:
-            messages = call.args[0]
-            self.assertIn("Amaze, amaze, amaze!", j.text_of(messages[0]["content"]))  # the live rocky_lines
-            self.assertIn("He has five legs\nand five hands.\n\nNo face.", j.text_of(messages[0]["content"]))  # and rocky_body
-            self.assertIn("kettle: likes soup", j.text_of(messages[1]["content"]))  # the live <memories>
+            system, messages = call.kwargs["system"], call.kwargs["messages"]
+            self.assertIn("Amaze, amaze, amaze!", j.text_of(system))  # the live rocky_lines
+            self.assertIn("He has five legs\nand five hands.\n\nNo face.", j.text_of(system))  # and rocky_body
+            self.assertIn("kettle: likes soup", j.text_of(messages[0]["content"]))  # the live <memories>
             text = j.text_of(messages[-1]["content"])
             self.assertIn("soup tonight?", text)
             self.assertEqual(text.count("rocky soup?"), 1)  # not the run before's message too
             self.assertIn('at="18:02"', text)  # 2 minutes after the log ends
         # run 2 remembered on the live memories, not on run 1's as well
         self.assertEqual([f["fact"] for f in rh.memories["1"]["facts"]], ["likes soup", "is hungry"])
-        self.assertEqual(j.HEADERS["Authorization"], "Bearer eval-key")
+        self.assertEqual(j.client.api_key, "eval-key")  # never the bot's
         self.assertIn("[rocky soup?] #2", out)
         self.assertIn("🧠 remembered: pip is hungry", out)
         self.assertEqual({p: p.read_text() for p in self.live.rglob("*") if p.is_file()}, self.before)
 
     async def test_with_another_message_both_are_its_to_answer(self):
         llm, _ = await self.run_main("--channel", str(CHANNEL), "rocky soup?", "--with", "fern: rocky tea?")
-        text = j.text_of(llm.await_args.args[0][-1]["content"])
+        text = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
         self.assertIn('from="fern"', text)
         self.assertEqual(text.count('woke_you="yes"'), 2)
 
     async def test_it_needs_the_eval_key(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-            await self.run_main("--channel", str(CHANNEL), "hi", env={"OPENROUTER_API_KEY_EVAL": ""})
+            await self.run_main("--channel", str(CHANNEL), "hi", env={"ANTHROPIC_API_KEY_EVAL": ""})
 
     async def test_a_fresh_chat_ends_when_its_said(self):
         llm, _ = await self.run_main("--fresh", "--at", "2026-10-16 19:00", "rocky get us a beer")
-        text = j.text_of(llm.await_args.args[0][-1]["content"])
+        text = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
         self.assertNotIn("soup tonight?", text)
         self.assertIn("anyone watching the match tonight", text)
         self.assertIn('at="19:00"', text)
@@ -94,7 +94,7 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         rh.Image.new("RGB", (8, 8), "red").save(image)
         for said in ("rocky look", "rocky [photo]"):
             llm, _ = await self.run_main("--fresh", "--image", str(image), said)
-            text = j.text_of(llm.await_args.args[0][-1]["content"])
+            text = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
             self.assertEqual(text.count("[photo]"), 1, said)
 
 

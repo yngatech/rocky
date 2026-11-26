@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from fakes import openrouter, patch_all, traced
+from fakes import answer, api_error, claude, patch_all, traced
 import rocky_bot as j
 
 
@@ -32,19 +32,18 @@ class StatusUpdateTests(unittest.IsolatedAsyncioTestCase):
                          (j, "post_status", self.posted), (j, "write_trace", self.written)])
 
     async def test_a_status_is_written_shown_posted_and_kept(self):
-        with openrouter((200, {"choices": [{"message": {"content": "Pasta, question?"}, "finish_reason": "stop"}],
-                               "usage": {"prompt_tokens": 2_000, "completion_tokens": 9, "cost": .0004}})) as s:
+        with claude(answer("Pasta, question?", uncached=2_000, cached=0, output=9)) as api:
             await j.update_status.coro()
         mood = "I feel pasta, question?"
         self.assertEqual(j.status.name, mood)
-        self.assertEqual(s.post.call_count, 1)  # one request: nothing judges it
+        self.assertEqual(api.call_count, 1)  # one request: nothing judges it
         self.saved.assert_called_once()
         self.assertEqual(self.saved.call_args.args[:2], (mood, 0))
         self.shown.assert_awaited_once()
         self.posted.assert_awaited_once_with(mood)
         t = self.written.call_args.args[0]
         self.assertEqual((t["status"], t["llm"], t["requests"]), (mood, "rocky", 1))
-        self.assertAlmostEqual(t["cost"], .0004)
+        self.assertAlmostEqual(t["cost"], (2_000 * .10 + 9 * .50) / 1e6)
         self.assertEqual([c["purpose"] for c in t["api_calls"]], ["status"])
         self.assertIn("Speaker: dinner tonight", j.context_text(t["context"]))
         self.assertNotIn("status_attempts", t)
@@ -53,7 +52,7 @@ class StatusUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(j.status_turn, 1)
 
     async def test_no_answer_keeps_the_previous_status(self):
-        with openrouter((502, {"error": {"code": 502}})):
+        with claude(api_error(529, "overloaded_error", "Overloaded")):
             await j.update_status.coro()
         self.assertIs(j.status, self.old)
         self.assertEqual(j.recent_statuses, self.recent)

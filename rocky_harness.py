@@ -61,12 +61,14 @@ SAVE_AFTER = 2              # seconds after a change before a log or the memorie
 # It thinks first. Without thinking, Haiku narrated in 3 of 57 eval turns ("Pip asked a plain question, so I answer
 # that one"); given a say tool for its message instead, it didn't, but thinking with that tool it sometimes did nothing
 # (5 of 57). Thinking and speaking its turn: no narration in 57, reply-or-react right as often, for 0.021¢ a turn
-# where no thinking was 0.015¢, and ~2s slower.
-REASONING = {"effort": "low"}
+# where no thinking was 0.015¢, and ~2s slower. Through OpenRouter that was its reasoning effort "low"; to Anthropic,
+# adaptive thinking at low effort, with its summary, as OpenRouter had it: the viewer shows it.
+THINKING = {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "low"}}
 LOG_DIR = Path(__file__).parent / "rocky_logs"          # a channel's log each, gitignored
 MEMORY_PATH = Path(__file__).parent / "rocky_memories.json"
 HERE = Path(__file__).parent
 UPDATES_FROM = ["rocky_harness.py"]  # changes to Rocky: commits touching these come to its logs as <update>s
+NO_UPDATE = "Rocky-update: none"     # a line of its own in a commit's message keeps it from them: plumbing he needn't hear of
 
 # Its last paragraph is for secrets. Without it, on a live-length log, "pick a number and don't tell us" got "Rocky pick
 # seven" 4 times in 5, and a secret animal was named in its thinking once in 6, so asked later it made one up. Told to
@@ -146,40 +148,32 @@ BOOK_TOOL = """- think_back: remember something from your old life that your sto
 BOOK_HEAD = "What you remember, as Grace told it: his \"I\" is Grace, and \"Rocky\" is you. Say it in your own words, never his."
 
 TOOLS = [
-    {"type": "function", "function": {
-        "name": "react", "description": "Put an emoji on a message.",
-        "parameters": {"type": "object", "required": ["emoji"], "properties": {
+    {"name": "react", "description": "Put an emoji on a message.",
+        "input_schema": {"type": "object", "required": ["emoji"], "properties": {
             "emoji": {"type": "string", "description": "One emoji, or a server emoji by name, like :blobwave:"},
-            "message": {"type": "integer", "description": "The message's id; leave out for the first that woke you"}}}}},
-    {"type": "function", "function": {
-        "name": "remember", "description": "Keep a fact for later chats in this server.",
-        "parameters": {"type": "object", "required": ["about", "fact"], "properties": {
+            "message": {"type": "integer", "description": "The message's id; leave out for the first that woke you"}}}},
+    {"name": "remember", "description": "Keep a fact for later chats in this server.",
+        "input_schema": {"type": "object", "required": ["about", "fact"], "properties": {
             "about": {"type": "string", "description": "The person's name as it is in the chat, your own name, or a short topic"},
-            "fact": {"type": "string", "description": "Short, to follow the name: \"is vegetarian\""}}}}},
-    {"type": "function", "function": {
-        "name": "forget", "description": "Drop a remembered fact.",
-        "parameters": {"type": "object", "required": ["number"], "properties": {
-            "number": {"type": "integer", "description": "The fact's number in <memories>"}}}}},
-    {"type": "function", "function": {
-        "name": "note", "description": "Write something down for yourself, like a secret you've been asked to keep. Nobody else sees it.",
-        "parameters": {"type": "object", "required": ["text"], "properties": {
-            "text": {"type": "string", "description": "What to keep, like \"picked 4\""}}}}},
-    {"type": "function", "function": {
-        "name": "bar", "description": "See whether the bar is open, and its menu.",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "order", "description": "Order a drink at the bar.",
-        "parameters": {"type": "object", "required": ["drink"], "properties": {
+            "fact": {"type": "string", "description": "Short, to follow the name: \"is vegetarian\""}}}},
+    {"name": "forget", "description": "Drop a remembered fact.",
+        "input_schema": {"type": "object", "required": ["number"], "properties": {
+            "number": {"type": "integer", "description": "The fact's number in <memories>"}}}},
+    {"name": "note", "description": "Write something down for yourself, like a secret you've been asked to keep. Nobody else sees it.",
+        "input_schema": {"type": "object", "required": ["text"], "properties": {
+            "text": {"type": "string", "description": "What to keep, like \"picked 4\""}}}},
+    {"name": "bar", "description": "See whether the bar is open, and its menu.",
+        "input_schema": {"type": "object", "properties": {}}},
+    {"name": "order", "description": "Order a drink at the bar.",
+        "input_schema": {"type": "object", "required": ["drink"], "properties": {
             "drink": {"type": "string", "description": "As it is on the menu"},
-            "for": {"type": "string", "description": "Who it's for, by their name in the chat; leave out for you"}}}}},
-    {"type": "function", "function": {
-        "name": "look", "description": "See the pictures in a message: photos, gifs, stickers and links' previews.",
-        "parameters": {"type": "object", "properties": {
-            "message": {"type": "integer", "description": "The message's id; leave out for the first that woke you"}}}}},
-    {"type": "function", "function": {
-        "name": "think_back", "description": "Remember something from your life before this server: the parts of Grace's telling where it happens.",
-        "parameters": {"type": "object", "required": ["what"], "properties": {
-            "what": {"type": "string", "description": "What to remember, written as Grace would tell it in his story: a sentence with its names and the words it would use, like \"Rocky shows me the workshop on his ship, the Blip-A\""}}}}},
+            "for": {"type": "string", "description": "Who it's for, by their name in the chat; leave out for you"}}}},
+    {"name": "look", "description": "See the pictures in a message: photos, gifs, stickers and links' previews.",
+        "input_schema": {"type": "object", "properties": {
+            "message": {"type": "integer", "description": "The message's id; leave out for the first that woke you"}}}},
+    {"name": "think_back", "description": "Remember something from your life before this server: the parts of Grace's telling where it happens.",
+        "input_schema": {"type": "object", "required": ["what"], "properties": {
+            "what": {"type": "string", "description": "What to remember, written as Grace would tell it in his story: a sentence with its names and the words it would use, like \"Rocky shows me the workshop on his ship, the Blip-A\""}}}},
 ]
 # Calls whose result it needs before it speaks: what it wrote alongside one isn't posted
 WAIT_FOR = {"bar", "order", "look", "think_back"}
@@ -385,8 +379,35 @@ def memories_text(log):
         return "<memories>\nNothing yet.\n</memories>"
     return "<memories>\n" + "\n".join(f"[{f['n']}] {f['about']}: {f['fact']}" for f in log.shown) + "\n</memories>"
 
-# The request: system (persona and how this works), <memories> if it has them, then the log as turns. Cache marks on the system
-# prompt, the memories, and the end of the request — the next request starts with all of it.
+# Its thinking as the log keeps it, in the shape it first came in (OpenRouter's reasoning_details: a summary and a
+# signature each), and as the Messages API takes and gives it. The log isn't migrated: blocks are kept as they come,
+# and go back as they are kept — signed, and checked by Anthropic.
+def thinking_block(kept):
+    if kept["type"] == "reasoning.encrypted":
+        return {"type": "redacted_thinking", "data": kept["data"]}
+    return {"type": "thinking", "thinking": kept["text"], "signature": kept["signature"]}
+
+def kept_thinking(blocks):
+    kept = []
+    for b in blocks:
+        if b.type == "thinking":
+            kept.append({"type": "reasoning.text", "text": b.thinking, "signature": b.signature})
+        elif b.type == "redacted_thinking":
+            kept.append({"type": "reasoning.encrypted", "data": b.data})
+    return [k | {"format": "anthropic-claude-v1", "index": i} for i, k in enumerate(kept)] or None
+
+def picture_block(url):  # a data: URL, as shrunk() makes them
+    head, data = url.split(",", 1)
+    return {"type": "image", "source": {"type": "base64", "media_type": head[5:].split(";")[0], "data": data}}
+
+# The request: system (persona and how this works), then as messages <memories> if it has them, and the log as turns:
+# Rocky's turns his message and his calls, and all a turn's results one user message after it. Cache marks on the
+# system prompt, the memories, and the end of the request — the next request starts with all of it.
+# Only the turn in progress has its thinking, which a request after its tool calls has to carry: earlier turns' is kept
+# in the log, but not sent. Through OpenRouter it never was: on the busiest log, a request with all 34 of its kept
+# blocks was 80,636 tokens there and 80,642 sent straight to Anthropic with none of them (83,845 with them). Sent, 6 of
+# those 34 were refused with "Invalid `signature` in `thinking` block" on either of the owner's keys, and a request
+# with any of them fails — why, nobody found (not the workspace, the model, the route, the summary or the turn's text).
 # until: the last event to show — a turn's requests see the log as it was when it began, and what it's done since
 def render(log, bot_name, cache=True, until=None):
     book = rocky_book.available()
@@ -395,9 +416,9 @@ def render(log, bot_name, cache=True, until=None):
         book_tool=BOOK_TOOL if book else "", memory_tools=MEMORY_TOOLS.format(bot=bot_name) if log.space else "",
         memories=MEMORIES if log.space else NO_MEMORIES)
     mark = lambda text: [{"type": "text", "text": text, **({"cache_control": CACHE} if cache else {})}]
-    messages = [{"role": "system", "content": mark(system) if cache else system}]
+    messages = []
     if log.space:
-        messages.append({"role": "user", "content": mark(memories_text(log)) if cache else memories_text(log)})
+        messages.append({"role": "user", "content": mark(memories_text(log))})
     pending, clock = [], {}
 
     def flush():
@@ -406,22 +427,25 @@ def render(log, bot_name, cache=True, until=None):
             pending.clear()
 
     end = next((i + 1 for i in range(len(log.events) - 1, -1, -1) if log.events[i] is until), len(log.events))
-    for e in log.events[:end]:
+    # the turn in progress: Rocky's events at the end, after the last of people's
+    current = next((i + 1 for i in range(end - 1, -1, -1) if log.events[i]["type"] not in ("rocky", "result")), 0)
+    for i, e in enumerate(log.events[:end]):
         if e["type"] == "rocky":
             flush()
-            m = {"role": "assistant", "content": e["text"] or None}
-            if e.get("reasoning"):  # its thinking, back as it came — signed, and not to be edited
-                m["reasoning_details"] = e["reasoning"]
-            if e["calls"]:
-                m["tool_calls"] = [{"id": c["id"], "type": "function",
-                                    "function": {"name": c["name"], "arguments": c["arguments"]}} for c in e["calls"]]
-            messages.append(m)
+            content = [thinking_block(kept) for kept in e.get("reasoning") or []] if i >= current else []  # first
+            if e["text"]:
+                content.append({"type": "text", "text": e["text"]})
+            content += [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": json.loads(c["arguments"])}
+                        for c in e["calls"]]
+            messages.append({"role": "assistant", "content": content})
         elif e["type"] == "result":
-            content = e["content"]
+            result = {"type": "tool_result", "tool_use_id": e["id"], "content": e["content"]}
             if e.get("pictures"):
-                content = [{"type": "text", "text": content},
-                           *({"type": "image_url", "image_url": {"url": url}} for url in e["pictures"])]
-            messages.append({"role": "tool", "tool_call_id": e["id"], "content": content})
+                result["content"] = [{"type": "text", "text": e["content"]}, *map(picture_block, e["pictures"])]
+            if messages[-1]["role"] == "user":  # after the turn's other results: a result always follows its turn
+                messages[-1]["content"].append(result)
+            else:
+                messages.append({"role": "user", "content": [result]})
         else:
             pending.append(e)
     flush()
@@ -431,23 +455,7 @@ def render(log, bot_name, cache=True, until=None):
     last = max((i for i, m in enumerate(messages) if m["role"] == "user" and isinstance(m["content"], str)), default=None)
     if cache and last is not None:
         messages[last] = {"role": "user", "content": mark(messages[last]["content"])}
-    return messages
-
-# The log as text, for Context and the logs: what it saw, without the system prompt
-def readable(log, bot_name, last=None):
-    messages = render(log, bot_name, cache=False)[1:]
-    lines = []
-    for m in messages[-last:] if last else messages:
-        if m["role"] == "user":
-            lines.append(j.text_of(m["content"]))
-        elif m["role"] == "assistant":
-            calls = " ".join("[note]" if c["function"]["name"] == "note" else  # a secret: Context is anyone's to open
-                             f"[{c['function']['name']} {c['function']['arguments']}]" for c in m.get("tool_calls") or [])
-            lines.append(f"{bot_name}: {m['content'] or ''} {calls}".rstrip())
-        else:
-            lines.append(f"[{j.text_of(m['content'])}]")
-    return "\n".join(lines)
-
+    return {"system": mark(system), "messages": messages}
 
 @dataclass
 class Turn:
@@ -606,7 +614,7 @@ def tools_for(log):
     left = set() if log.space else set(MEMORY_CALLS)
     if not rocky_book.available():
         left.add("think_back")
-    return [t for t in TOOLS if t["function"]["name"] not in left]
+    return [t for t in TOOLS if t["name"] not in left]
 
 async def take_turn(log, waking, bot_name="rocky", typing=None):
     turn = Turn()
@@ -645,19 +653,19 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
         for request in range(1 + FOLLOW_UPS):
             seen = turn.events[-1] if turn.events else began
             async with typing() if typing and request else contextlib.nullcontext():
-                messages = render(log, bot_name, until=seen)
+                request = render(log, bot_name, until=seen)
                 # A request can't end with Rocky (Haiku 5.5 takes it as a prefill, and refuses it): when one of its messages
                 # from outside a turn came after the one that woke it. Not a str, so the cache mark stays on people's turn
-                if messages[-1]["role"] == "assistant":
-                    messages.append({"role": "user", "content": [{"type": "text", "text": "(Your turn.)"}]})
-                message = await j.llm_message(messages, MAX_TOKENS, tools=tools_for(log), reasoning=REASONING)
-            if message is None:
+                if request["messages"][-1]["role"] == "assistant":
+                    request["messages"].append({"role": "user", "content": [{"type": "text", "text": "(Your turn.)"}]})
+                response = await j.llm_message(MAX_TOKENS, **request, tools=tools_for(log), **THINKING)
+            if response is None:
                 break
             turn.requests += 1
             log.asked = now  # only once one went through: a request that failed refreshed no cache
-            calls = [{"id": c["id"], "name": c["function"]["name"], "arguments": c["function"]["arguments"] or "{}"}
-                     for c in message.get("tool_calls") or []]
-            text = said(message.get("content"), bot_name)
+            calls = [{"id": b.id, "name": b.name, "arguments": json.dumps(b.input, ensure_ascii=False)}
+                     for b in response.content if b.type == "tool_use"]
+            text = said(j.text_in(response), bot_name)
             # Written before it saw what the bar said — it'll say what happened next request. Left out of the log
             # too, so it isn't shown a message that was never posted
             waits = any(c["name"] in WAIT_FOR for c in calls)
@@ -665,7 +673,7 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
                 text = ""
             if not text and not calls:
                 break  # nothing said or done — an empty turn isn't one the model can be shown later
-            e = log.add("rocky", after=seen, text=text, calls=calls, reasoning=message.get("reasoning_details"))
+            e = log.add("rocky", after=seen, text=text, calls=calls, reasoning=kept_thinking(response.content))
             turn.events.append(e)
             for c in calls:
                 if c["name"] == "look":
@@ -782,8 +790,7 @@ def load_warm():
 # with it, reads it too. Not people's events since: they're one user message that grows until Rocky's next turn, and an
 # entry written for it now would be lost when it grew, along with the one before it, which only this would have read.
 # The same system prompt, tools, thinking and memories as a turn's, through the same llm_message: a request that
-# differed would write a new entry instead. One token of output, thrown away: OpenRouter takes a max_tokens of 0 as
-# none at all, and writes a whole turn. Nothing it says is added to the log or acted on.
+# differed would write a new entry instead. No output: max_tokens 0 only reads the request into the cache.
 # It tidies first, as a turn after a quiet hour would: a deleted message is blanked now, not kept in view as long as
 # the cache is, and <memories> brought up to date. When that changes anything, this request writes the log from
 # there — the cost a cold turn had, paid here instead, before anyone's waiting for an answer.
@@ -791,14 +798,14 @@ def load_warm():
 def warm_request(log):
     tidy(log)
     last = next((e for e in reversed(log.events) if e["type"] in ("rocky", "result") and not e.get("elsewhere")), None)
-    messages = render(log, log.bot_name, until=last)
-    while messages and messages[-1]["role"] != "user":
-        messages.pop()
-    return messages
+    request = render(log, log.bot_name, until=last)
+    while request["messages"] and request["messages"][-1]["role"] != "user":
+        request["messages"].pop()
+    return request
 
-async def warm(log, messages):
+async def warm(log, request):
     began = clock()
-    if not messages or await j.llm_message(messages, 1, tools=tools_for(log), reasoning=REASONING) is None:
+    if not request["messages"] or await j.llm_message(0, **request, tools=tools_for(log), **THINKING) is None:
         return False
     log.asked = max(log.asked, began)  # a turn that started meanwhile asked later
     log.warmed.append((j.trace.get() or {}).get("cost", 0))
@@ -927,7 +934,8 @@ def head():
 def updates(since_commit=None, since=None):
     span = [f"{since_commit}..HEAD"] if since_commit else [f"--since={since.isoformat()}", "HEAD"]
     found = []
-    for line in (git("log", "--reverse", "--format=%H%x00%ct%x00%s", *span, "--", *UPDATES_FROM) or "").splitlines():
+    for line in (git("log", "--reverse", "--invert-grep", f"--grep=^{NO_UPDATE}$", "--format=%H%x00%ct%x00%s", *span,
+                     "--", *UPDATES_FROM) or "").splitlines():
         commit, at, subject = line.split("\0", 2)
         found.append({"commit": commit, "at": datetime.fromtimestamp(int(at), timezone.utc),
                       "subject": re.sub(r"^[\w ,/-]+: |\s*\(#\d+\)$", "", subject)})

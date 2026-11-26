@@ -1,4 +1,4 @@
-"""What the offline tests share: rocky_bot imported without real keys, and fakes for Discord, OpenRouter, Rocky's
+"""What the offline tests share: rocky_bot imported without real keys, and fakes for Discord, the Messages API, Rocky's
 answers and Rocky's state. Not a test module itself: unittest only collects test_*.py.
 """
 
@@ -13,9 +13,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("DISCORD_TOKEN_JEV", "test")
-os.environ.setdefault("OPENROUTER_API_KEY", "test")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test")
 
+import anthropic  # noqa: E402
 import discord  # noqa: E402
+import httpx2  # noqa: E402
 import rocky_bot as j  # noqa: E402
 import rocky_book  # noqa: E402
 import rocky_harness as rh  # noqa: E402
@@ -45,21 +47,28 @@ def isolate_rocky(case, here):
                      (rocky_book, "INDEX_PATH", Path(here) / "rocky_book.json"), (rocky_book, "index", None)])
 
 
-def answer(text="", calls=(), reasoning=None):
-    # Rocky's response to a request: what it says, and the tools it calls as [(name, arguments)]
-    return {"role": "assistant", "content": text or None, "reasoning_details": reasoning,
-            "tool_calls": [{"id": f"call_{i}", "type": "function",
-                            "function": {"name": name, "arguments": json.dumps(args)}}
-                           for i, (name, args) in enumerate(calls)] or None}
+def answer(text="", calls=(), thinking=(), stop=None, refused=None, uncached=1000, cached=8000, written=0, output=20):
+    # Rocky's response to a request, as the SDK gives it: its thinking as [(summary, signature)], what it says, the
+    # tools it calls as [(name, arguments)], why it stopped (refused: a refusal's category), and its usage — of its
+    # input how much was neither read from the cache nor written to it, read, and written (all for an hour)
+    content = [{"type": "thinking", "thinking": summary, "signature": signature} for summary, signature in thinking]
+    content += [{"type": "text", "text": text}] if text else []
+    content += [{"type": "tool_use", "id": f"toolu_{i}", "name": name, "input": args} for i, (name, args) in enumerate(calls)]
+    return anthropic.types.Message.model_validate({
+        "id": "msg_synthetic", "type": "message", "role": "assistant", "model": j.LLM_MODEL, "content": content,
+        "stop_reason": "refusal" if refused else stop or ("tool_use" if calls else "end_turn"),
+        "stop_details": {"type": "refusal", "category": refused, "explanation": None} if refused else None,
+        "usage": {"input_tokens": uncached, "cache_read_input_tokens": cached, "cache_creation_input_tokens": written,
+                  "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": written},
+                  "output_tokens": output}})
 
 
-def completion(message, cost=.0016, cached=8000, written=None):
-    # OpenRouter's body for a chat completion: Rocky's message (answer()), with its usage and cost, and of its 9000
-    # input tokens how many were read from the cache and written to it
-    return {"choices": [{"message": message, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
-            "usage": {"prompt_tokens": 9000, "completion_tokens": 20, "cost": cost,
-                      "prompt_tokens_details": {"cached_tokens": cached,
-                                                **({"cache_write_tokens": written} if written is not None else {})}}}
+def api_error(status, type, message, code=None):
+    # The SDK's error for a response the API refused, as its client makes it: the class for the status, or the code
+    body = {"type": "error", "error": {"type": type, "message": message,
+                                       **({"details": {"error_code": code}} if code else {})}}
+    response = httpx2.Response(status, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+    return j.client._make_status_error(f"Error code: {status}", body=body, response=response)
 
 
 def session():
@@ -70,25 +79,25 @@ def session():
 
 
 @contextlib.contextmanager
-def openrouter(*replies):
-    # OpenRouter answering each request with the next (status, body), the last one again once they run out — or a
-    # function of the request's body that gives one, or a coroutine that does when it's done. Yields the session, to
-    # see what was asked, with set_credit on it; retries don't wait.
+def claude(*replies):
+    # The Messages API answering each request with the next reply, the last one again once they run out: an answer(),
+    # an api_error() to raise, or a function of the request (messages.create's arguments) that gives one, or a
+    # coroutine that does when it's done. Yields the fake create, whose calls are the requests, with set_credit on it.
     replies = list(replies)
 
-    async def reply():
+    async def create(**request):
         r = replies.pop(0) if len(replies) > 1 else replies[0]
         if callable(r):
-            r = r(s.post.call_args.kwargs["json"])
-        status, body = await r if asyncio.iscoroutine(r) else r
-        return SimpleNamespace(status=status, json=AsyncMock(return_value=body),
-                               text=AsyncMock(return_value=json.dumps(body)))
+            r = r(request)
+        if asyncio.iscoroutine(r):
+            r = await r
+        if isinstance(r, BaseException):
+            raise r
+        return r
 
-    s = session()
-    s.post.return_value.__aenter__.side_effect = reply
-    with patch.object(j.aiohttp, "ClientSession", return_value=s), \
-            patch.object(j, "set_credit", AsyncMock()) as s.set_credit, patch.object(j.asyncio, "sleep", AsyncMock()):
-        yield s
+    fake = AsyncMock(side_effect=create)
+    with patch.object(j.client.messages, "create", fake), patch.object(j, "set_credit", AsyncMock()) as fake.set_credit:
+        yield fake
 
 
 class Message(SimpleNamespace):

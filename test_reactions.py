@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("DISCORD_TOKEN_JEV", "test")
-os.environ.setdefault("OPENROUTER_API_KEY", "test")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test")
 
 import reactions as r  # noqa: E402
 

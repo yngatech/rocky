@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import aiohttp
+import anthropic
 import discord
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -32,7 +33,8 @@ import rocky_viewer
 load_dotenv()
 
 TOKEN = os.environ["DISCORD_TOKEN_JEV"]
-OPENROUTER_KEY = os.environ["OPENROUTER_API_KEY"]
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    sys.exit("ANTHROPIC_API_KEY is missing: add the bot's Claude API key to .env (see README.md)")
 STATUS_CHANNEL = int(os.environ.get("STATUS_CHANNEL_ID") or 0)  # where each new status is also posted — unset for nowhere
 TIMEZONE = ZoneInfo(os.environ.get("TIMEZONE") or "UTC")  # the clock an LLM's transcript shows times on (IANA name)
 VIEWER_PORT = int(os.environ.get("ROCKY_VIEWER_PORT") or 0)  # the page of Rocky's logs, on 127.0.0.1 — unset for none
@@ -104,49 +106,60 @@ def unrender(text):
     return text.replace("\n", "\\n")
 
 
-# How a chat completion can end without its answer: OpenRouter's content_filter, or the provider's own refusal
-REFUSALS = {"refusal", "content_filter"}
-FINISHED = {None, "stop", "tool_calls"}  # endings not worth a mention
+# The Messages API, through the SDK, which retries what's worth retrying (429s, 5xx, timeouts) twice itself
+client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=60)
+
+# Haiku's prices, in $ per million tokens, from https://platform.claude.com/docs/en/about-claude/pricing: a request
+# whose prompt (cache reads and writes counted) is over LONG_PROMPT tokens pays LONG_PRICES for all of it
+PRICES = {"input": 0.10, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01, "output": 0.50}
+LONG_PROMPT = 100_000
+LONG_PRICES = {k: v * 5 for k, v in PRICES.items()}
+
+# What a response's usage cost, and its prompt's size: Anthropic counts tokens, not money, and input_tokens is only
+# what was neither read from the cache nor written to it
+def usage_cost(usage):
+    read, written = usage.cache_read_input_tokens or 0, usage.cache_creation_input_tokens or 0
+    prompt = usage.input_tokens + read + written
+    price = LONG_PRICES if prompt > LONG_PROMPT else PRICES
+    by_ttl = usage.cache_creation
+    short = by_ttl.ephemeral_5m_input_tokens if by_ttl else 0  # every mark of ours is an hour's, but as billed
+    cost = (usage.input_tokens * price["input"] + read * price["cache_read"] + short * price["cache_write_5m"]
+            + (written - short) * price["cache_write_1h"] + usage.output_tokens * price["output"]) / 1e6
+    return prompt, cost
 
 
-def record_api_request(model, purpose, status, attempt, usage, response):
-    """Keep request purposes and reported billing, without storing another copy of the prompt.
+def record_api_request(purpose, status, response=None, cost=None):
+    """Keep request purposes and what they cost, without storing another copy of the prompt.
 
-    response: a chat completion's JSON ({} if there was none) — why it stopped, OpenRouter's generation id and the
-    provider it went to, for auditing routing."""
+    status: the HTTP status, or "error" for none; response: the Message, for why it stopped and its id."""
     if (t := trace.get()) is not None:
-        usage = usage or {}
-        # any JSON at all, on any status: an odd one mustn't stop the retries (this is in finally)
-        response = response if isinstance(response, dict) else {}
-        choices = response.get("choices")
-        choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
         t.setdefault("api_calls", []).append({
-            "model": model, "purpose": purpose, "status": status, "attempt": attempt,
-            "router_cost": usage.get("cost"), "is_byok": bool(usage.get("is_byok")),
-            "key_cost": (usage.get("cost_details") or {}).get("upstream_inference_cost")
-                        if usage.get("is_byok") else 0,
-            "finish_reason": choice.get("finish_reason"), "native_finish_reason": choice.get("native_finish_reason"),
-            "id": response.get("id"), "provider": response.get("provider")})
+            "model": LLM_MODEL, "purpose": purpose, "status": status, "cost": cost,
+            "stop_reason": response and response.stop_reason, "id": response and response.id})
 
 
-def stopped_early(call):  # why a logged request stopped, if not by finishing: a refusal, running out of tokens
+# Why a logged request stopped, if not by finishing: a refusal, running out of tokens. Calls from before (through
+# OpenRouter) have its finish_reason, and the provider's own as native_finish_reason.
+REFUSALS = {"refusal", "content_filter"}
+FINISHED = {None, "stop", "tool_calls"}
+
+def stopped_early(call):
+    if "stop_reason" in call:
+        return call["stop_reason"] if call["stop_reason"] in ("refusal", "max_tokens") else None
     if call.get("finish_reason") not in FINISHED or call.get("native_finish_reason") in REFUSALS:
         return call.get("native_finish_reason") or call["finish_reason"]
 
 
-# Whether OpenRouter refused a request for want of money, so retrying won't help: 402 when the account's credit or
-# the key's limit is used up, 403 when a workspace or guardrail budget is. text: the error response.
-def out_of_credit(status, text):
-    if status == 402:
-        return True
-    try:
-        source = json.loads(text)["error"]["metadata"]["limit_source"]
-    except (ValueError, TypeError, KeyError):
-        return False
-    return status == 403 and str(source).endswith("_budget")
+# Whether a request was refused for want of money, so retrying won't help: 402 billing_error; a 429 for the usage
+# tier's monthly cap or the contract's; a 400 for a spend limit the owner set, which has no code — the docs give only
+# its message ("You have reached your specified API usage limits" or "... workspace API usage limits"); and the 400
+# Anthropic sends for prepaid credit run out, which the docs don't describe ("Your credit balance is too low ...").
+SPEND_CAPS = {"enforced_spend_limit_reached", "contract_spend_limit_reached"}
 
-
-HEADERS = {"Authorization": f"Bearer {OPENROUTER_KEY}", "Content-Type": "application/json"}
+def out_of_credit(e):
+    return (isinstance(e, anthropic.PaymentRequiredError) or e.error_code in SPEND_CAPS
+            or isinstance(e, anthropic.BadRequestError)
+            and re.search(r"credit balance|reached your specified (workspace )?API usage limits", e.api_message or "", re.I))
 
 
 # How statuses start, taken in turn: each is the rest of a diary entry
@@ -164,12 +177,11 @@ def recent_chat():
 # Haiku is Rocky, the Eridian engineer from Project Hail Mary who the bot is named after. It answers as Rocky itself:
 # the channel as its conversation, with tools to react and remember (rocky_harness). Statuses it writes from a prompt
 # of its own (llm_status).
-LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
-LLM_MODEL = "anthropic/claude-haiku-5.5"
-LLM_WINDOW = 1_000_000          # its context length on OpenRouter, in tokens, for Context's usage
+LLM_MODEL = "claude-haiku-5-5"
+LLM_WINDOW = 1_000_000          # its context window, in tokens, for Context's usage
 LLM_MAX_TOKENS = 60             # only to stop a runaway status
-LLM_TEMPERATURE = 1.0
-LLM_FREQUENCY_PENALTY = 0.5
+# A status without thinking, as it was written through OpenRouter (reasoning off), at the model's default effort
+STATUS_THINKING = {"type": "disabled"}
 # Real lines of Rocky's from the book and film, one per line ("#" comments), shown to the LLM as examples. Gitignored:
 # they're quotes from copyrighted works, so they stay out of this public repo. Without the file it goes by the rules.
 ROCKY_LINES_PATH = Path(__file__).parent / "rocky_lines.txt"
@@ -262,67 +274,48 @@ def clean_llm(text, bot_name):
 def text_of(content):  # a message's content: a string, a list of blocks, or nothing (a tool call's turn)
     return content if isinstance(content, str) else "".join(b.get("text", "") for b in content or [])
 
-# A request and its whole answer: the message, with its tool calls and reasoning if there are any — or None if there
-# was none. tools and reasoning: as OpenRouter takes them, for rocky_harness. Its cost goes on the trace.
-async def llm_message(messages, max_tokens=LLM_MAX_TOKENS, tools=None, reasoning=None):
-    body = {"model": LLM_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": LLM_TEMPERATURE,
-            "frequency_penalty": LLM_FREQUENCY_PENALTY, "reasoning": reasoning or {"enabled": False},
-            "usage": {"include": True}}
-    if tools:
-        body["tools"] = tools
+def text_in(response):  # a response's words, without its thinking or tool calls
+    return "".join(b.text for b in response.content if b.type == "text")
+
+# A request and its answer: the Message — or None if there was none to act on: the request failed, Rocky refused, or
+# it ran out of tokens before it was done (all a warm-up, with none to spend, does). request: messages.create's
+# arguments, as rocky_harness.render and its turn make them. Its cost goes on the trace.
+async def llm_message(max_tokens=LLM_MAX_TOKENS, **request):
     purpose = next((p for p in ("status", "warm") if p in (trace.get() or {})), "reply")
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
-        for attempt in range(3):
-            status, usage, data = "error", None, None
-            try:
-                async with session.post(LLM_URL, json=body, timeout=aiohttp.ClientTimeout(total=60)) as r:
-                    status = r.status
-                    if r.status in (402, 403) and out_of_credit(r.status, text := await r.text()):
-                        log.warning(f"LLM {r.status}: {text[:300]}")
-                        note(error="out of credit")
-                        await set_credit(False)
-                        return None
-                    data = await r.json(content_type=None)
-                    usage = data.get("usage") or {}
-                    if r.status >= 400 or "choices" not in data:
-                        if r.status < 400:
-                            status = "invalid response"
-                        log.warning(f"LLM {r.status} {attempt}: {str(data)[:300]}")
-                        await asyncio.sleep(1 + 2 * attempt)
-                        continue
-            except Exception as e:
-                status = "error"
-                log.warning(f"LLM err {attempt}: {e}")
-                await asyncio.sleep(1 + 2 * attempt)
-                continue
-            finally:
-                record_api_request(LLM_MODEL, purpose, status, attempt, usage, data or {})
-            if (t := trace.get()) is not None:
-                # On our own Anthropic key (OpenRouter's BYOK) OpenRouter charges nothing, up to its allowance, and
-                # the request is paid from the key's credit: counted in the cost too, and apart as byok_cost
-                byok = usage.get("is_byok") and (usage.get("cost_details") or {}).get("upstream_inference_cost") or 0
-                t["cost"] += (usage.get("cost") or 0) + byok
-                if byok:
-                    t["byok_cost"] = t.get("byok_cost", 0) + byok
-                t["requests"] += 1
-            # Exact input/output counts and cache reads returned by OpenRouter.
-            note(llm_window=LLM_WINDOW, llm_prompt_tokens=usage.get("prompt_tokens"),
-                 llm_completion_tokens=usage.get("completion_tokens"),
-                 llm_cached_tokens=(usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
-                 llm_cache_write_tokens=(usage.get("prompt_tokens_details") or {}).get("cache_write_tokens"),
-                 llm_prompt_chars=sum(len(text_of(m.get("content"))) for m in messages))
-            await set_credit(True)
-            choice = data["choices"][0]
-            if reasons := {choice.get("finish_reason"), choice.get("native_finish_reason")} & REFUSALS:
-                # Otherwise just an empty reply. The reason only, never what it said.
-                log.warning(f"LLM refused ({', '.join(sorted(reasons))}) via {data.get('provider')}, "
-                            f"generation {data.get('id')}")
-            # its tool calls are cut off where it stopped — a warm-up's are meant to be
-            if choice.get("finish_reason") == "length" and tools and purpose != "warm":
-                log.warning(f"LLM ran out of tokens with tools: {str(choice['message'])[:300]}")
-                note(llm_cut_off=True)
-            return choice["message"]
-    return None
+    try:
+        response = await client.messages.create(model=LLM_MODEL, max_tokens=max_tokens, **request)
+    except anthropic.APIStatusError as e:
+        record_api_request(purpose, e.status_code)
+        if out_of_credit(e):
+            log.warning(f"LLM {e.status_code} {e.type}: {e.api_message}")
+            note(error="out of credit")
+            await set_credit(False)
+        else:
+            log.warning(f"LLM {e.status_code} {e.type} {e.error_code or ''}: {e.api_message} ({e.request_id})")
+        return None
+    except anthropic.APIConnectionError as e:
+        record_api_request(purpose, "error")
+        log.warning(f"LLM err: {e!r}")
+        return None
+    prompt, cost = usage_cost(response.usage)
+    record_api_request(purpose, 200, response, cost)
+    if (t := trace.get()) is not None:
+        t["cost"] += cost
+        t["requests"] += 1
+    note(llm_window=LLM_WINDOW, llm_prompt_tokens=prompt, llm_completion_tokens=response.usage.output_tokens,
+         llm_cached_tokens=response.usage.cache_read_input_tokens or 0,
+         llm_cache_write_tokens=response.usage.cache_creation_input_tokens or 0)
+    await set_credit(True)
+    if response.stop_reason == "refusal":  # why only, never what it said; nothing of it is posted or kept
+        category = response.stop_details and response.stop_details.category
+        log.warning(f"LLM refused ({category}), {response.id}")
+        note(llm_refused=category or True)
+        return None
+    if response.stop_reason == "max_tokens" and purpose != "warm":  # cut off: half a message, or a call's arguments
+        log.warning(f"LLM ran out of tokens, {response.id}")
+        note(llm_cut_off=True)
+        return None
+    return response
 
 # A new status, starting with opener, about chat — or None if the request failed
 async def llm_status(bot_name, opener, chat=""):
@@ -330,10 +323,11 @@ async def llm_status(bot_name, opener, chat=""):
            + (f"Recent chat in the server:\n{chat}\n\n" if chat else "")
            + LLM_STATUS.format(bot=bot_name, start=opener))
     note(llm="rocky", llm_model=LLM_MODEL, llm_chat_chars=len(chat))
-    sent = [{"role": "system", "content": rocky_prompt(bot_name, shuffle=True)}, {"role": "user", "content": ask}]
-    message = await llm_message(sent)
-    text = (message or {}).get("content") or ""
-    note(context=request_record(sent + [{"role": "assistant", "content": text}], 2))
+    system, sent = rocky_prompt(bot_name, shuffle=True), [{"role": "user", "content": ask}]
+    response = await llm_message(system=system, messages=sent, thinking=STATUS_THINKING)
+    text = text_in(response) if response else ""
+    said = [{"role": "assistant", "content": [{"type": "text", "text": text}]}]
+    note(context=request_record(request_items(system, sent + said), 2))
     mood = " ".join(clean_llm(text, bot_name).split())  # one line
     if not mood:
         return None
@@ -453,7 +447,7 @@ bot.setup_hook = setup_hook
 stopping = asyncio.Event()
 handling: set[asyncio.Task] = set()
 
-# Out of OpenRouter credit, the bot shows as idle with a status saying so — otherwise it just answers "..." and nobody
+# Out of credit, the bot shows as idle with a status saying so — otherwise it just answers "..." and nobody
 # knows why. None until known; any request that goes through, or a check every CREDIT_CHECK_EVERY, puts it back.
 CREDIT_CHECK_EVERY = 300        # seconds
 # What the bot answers with meanwhile. The .gif itself, not its klipy page — that unfurls as a "KLIPY: … View & Share" card.
@@ -490,29 +484,21 @@ async def show_credit():
     except Exception as e:
         log.warning(f"Changing status failed: {e}")
 
-# What's left to spend: the account's credit, or the key's own limit or its workspace's budget if that's lower. None if
-# the check failed.
-async def credit_left():
+# Whether there's money to spend, from a request too small to cost anything — no output, and a word in: the API has
+# no balance to ask for with a key like the bot's. None if it failed for another reason.
+async def has_money():
     try:
-        async with aiohttp.ClientSession(headers=HEADERS, timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.get("https://openrouter.ai/api/v1/credits") as r:
-                credits = (await r.json())["data"]
-            async with session.get("https://openrouter.ai/api/v1/key") as r:
-                key = (await r.json())["data"]
-    except Exception as e:
-        log.warning(f"Checking credit failed: {e}")
+        await client.messages.create(model=LLM_MODEL, max_tokens=0, messages=[{"role": "user", "content": "hi"}])
+    except anthropic.APIStatusError as e:
+        return False if out_of_credit(e) else None
+    except anthropic.APIConnectionError:
         return None
-    left = credits["total_credits"] - credits["total_usage"]
-    if key.get("limit_remaining") is not None:
-        left = min(left, key["limit_remaining"])
-    if (budget := key.get("effective_budget")) and budget.get("remaining_usd") is not None:
-        left = min(left, budget["remaining_usd"])  # the budget that blocks requests first
-    return left
+    return True
 
 async def wait_for_credit():
     while has_credit is False:
         await asyncio.sleep(CREDIT_CHECK_EVERY)
-        if (left := await credit_left()) is not None and left > 0:
+        if await has_money():
             await set_credit(True)
 
 # The role Discord creates for the bot (same name, e.g. "@rocky") — mentioning it counts as mentioning the bot
@@ -859,8 +845,8 @@ async def on_ready():
         await bot.change_presence(status=discord.Status.idle, activity=WAKING)
     except Exception as e:
         log.warning(f"Changing status failed: {e}")
-    if has_credit is None and (left := await credit_left()) is not None:
-        await set_credit(left > 0)
+    if has_credit is None and (ok := await has_money()) is not None:
+        await set_credit(ok)
     try:
         await catch_up()
     finally:
@@ -1141,35 +1127,48 @@ def plural(n, word):
 
 # A request as Context shows it, for the trace: each message as it was sent, but for what Context mustn't show — the
 # system prompt only by its length and <memories> by how many facts, a note without what it says, thinking, pictures
-# and the book's passages (think_back: they're only ever in Discord in Rocky's own words) only by how many. sent: the
-# request, system prompt first, then its answer; turn: how many messages at its end are the turn's, the people's message that woke it first; memories: the facts in <memories>, if it has them.
-def request_record(sent, turn, memories=None):
-    names, messages = {}, []
-    for i, m in enumerate(sent):
-        content = m.get("content")
-        blocks = content if isinstance(content, list) else []
-        x = {"role": m["role"]}
-        if i == 0:
-            x["chars"] = len(text_of(content))
-        elif i == 1 and memories is not None:
-            x["facts"] = memories
-        elif text := text_of(content):
-            x["content"] = text
-        if any("cache_control" in b for b in blocks):
-            x["cached"] = True
-        if pictures := sum(b.get("type") == "image_url" for b in blocks):
-            x["pictures"] = pictures
-        if m.get("reasoning_details"):
-            x["thinking"] = len(m["reasoning_details"])
-        if m.get("tool_calls"):
-            x["calls"] = [{"name": c["function"]["name"]} | ({} if c["function"]["name"] == "note" else  # a secret
-                          {"arguments": c["function"]["arguments"]}) for c in m["tool_calls"]]
-            names |= {c["id"]: c["function"]["name"] for c in m["tool_calls"]}
-        if m["role"] == "tool":
-            x["name"] = names.get(m.get("tool_call_id"))
+# and the book's passages (think_back: they're only ever in Discord in Rocky's own words) only by how many. Each tool
+# result is an item of its own, as each was its own message through OpenRouter, so old traces read the same.
+def request_items(system, messages):
+    blocks = lambda content: content if isinstance(content, list) else [{"type": "text", "text": content}]
+    names, items = {}, [{"role": "system", "chars": len(text_of(system))}
+                        | ({"cached": True} if any("cache_control" in b for b in blocks(system)) else {})]
+    for m in messages:
+        rest = []
+        for b in blocks(m["content"]):
+            if b["type"] != "tool_result":
+                rest.append(b)
+                continue
+            x, content = {"role": "tool", "name": names.get(b["tool_use_id"])}, blocks(b["content"])
+            if text := text_of(content):
+                x["content"] = text
+            if pictures := sum(c["type"] == "image" for c in content):
+                x["pictures"] = pictures
             if x["name"] == "think_back" and "<passage>" in x.get("content", ""):
                 x["passages"] = x.pop("content").count("<passage>")
-        messages.append(x)
+            items.append(x)
+        if not rest:
+            continue
+        x = {"role": m["role"]}
+        if text := text_of(rest):
+            x["content"] = text
+        if any("cache_control" in b for b in rest):
+            x["cached"] = True
+        if thinking := sum(b["type"] in ("thinking", "redacted_thinking") for b in rest):
+            x["thinking"] = thinking
+        if calls := [b for b in rest if b["type"] == "tool_use"]:
+            x["calls"] = [{"name": c["name"]} | ({} if c["name"] == "note" else  # a secret
+                          {"arguments": json.dumps(c["input"], ensure_ascii=False)}) for c in calls]
+            names |= {c["id"]: c["name"] for c in calls}
+        items.append(x)
+    return items
+
+# items: request_items, then its answer; turn: how many items at its end are the turn's, the people's message that
+# woke it first; memories: the facts in <memories>, if it has them.
+def request_record(items, turn, memories=None):
+    messages = list(items)
+    if memories is not None:
+        messages[1] = {"role": "user", "facts": memories} | ({"cached": True} if messages[1].get("cached") else {})
     head = 1 + (memories is not None)
     end = max(head, len(messages) - turn)
     kept = messages[max(head, end - max(CONTEXT_KEPT - (len(messages) - end), 0)):end]
@@ -1379,15 +1378,18 @@ def diagnostics_response(t):
     if (seconds := t.get("seconds")) is not None:
         embed.add_field(name="Total time", value=f"{seconds:.1f}s")
     embed.add_field(name="Total cost", value=money(t.get("cost")))
+    # Calls through OpenRouter, before Rocky called Anthropic directly, have its cost and the key's apart
+    routed = calls and any("is_byok" in c for c in calls)
     if calls:
         groups = {}
         for call in calls:
-            key = call["purpose"], call["model"], call["is_byok"]
+            key = call["purpose"], call["model"], call.get("is_byok")
             groups.setdefault(key, []).append(call)
         for (purpose, model, byok), group in groups.items():
-            name = "Rocky" if model == LLM_MODEL else model
-            billing = ("Anthropic key" if model.startswith("anthropic/") else "provider key") if byok else "OpenRouter"
-            costs = [None if c["router_cost"] is None or c["key_cost"] is None
+            name = "Rocky" if model in (LLM_MODEL, "anthropic/claude-haiku-5.5") else model
+            billing = ((("Anthropic key" if model.startswith("anthropic/") else "provider key") if byok else "OpenRouter")
+                       if routed else "Anthropic")
+            costs = [c["cost"] if "cost" in c else None if c["router_cost"] is None or c["key_cost"] is None
                      else c["router_cost"] + c["key_cost"] for c in group]
             known = [cost for cost in costs if cost is not None]
             cost = sum(known) if known else None
@@ -1406,7 +1408,7 @@ def diagnostics_response(t):
             embed.add_field(name=REQUEST_PURPOSES.get(purpose, purpose), value=detail, inline=False)
         if retries := sum(c.get("attempt", 0) > 0 for c in calls):
             embed.add_field(name="Retries", value=f"{retries:,} HTTP retries", inline=False)
-    if (cost := t.get("cost")) is not None:
+    if (cost := t.get("cost")) is not None and routed:
         byok = t.get("byok_cost", 0)
         embed.add_field(name="Billing", value=f"OpenRouter: {money(cost - byok)}\nProvider key: {money(byok)}",
                         inline=False)
@@ -1420,7 +1422,7 @@ def diagnostics_response(t):
         cache.append(f"{output:,} output tokens")
     if cache:
         embed.add_field(name="Final generation", value=" · ".join(cache), inline=False)
-    if calls:
+    if routed:
         embed.set_footer(text="Routed through OpenRouter. Provider keys are billed by their provider.")
     return embed
 
@@ -1610,7 +1612,7 @@ async def rocky_turn(m, entry, bot_name, entries, where=None, chat=None):
         turn = await rh.take_turn(chat, waking, bot_name, typing=where.typing)
     rh.changed(chat)  # saved whether or not it then posts: after a turn that only reacts, nothing else may change the log
     # its last request and what it answered, before a jump can drop any of it
-    sent = rh.render(chat, bot_name, until=turn.events[-1] if turn.events else turn.woke)
+    sent = request_items(**rh.render(chat, bot_name, until=turn.events[-1] if turn.events else turn.woke))
     if sent[(began := len(sent) - len(turn.events)) - 1]["role"] == "assistant":  # a status came after what woke it
         sent.insert(began, {"role": "user", "content": "(Your turn.)"})  # as take_turn sent it
     note(context=request_record(sent, 1 + len(turn.events), len(chat.shown) if chat.space else None))

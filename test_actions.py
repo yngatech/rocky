@@ -1,5 +1,5 @@
 """Messages to Rocky answered end to end, and the Context, Stats and Diagnostics actions on what was posted, with
-Discord and OpenRouter faked and the bot's logs in a temporary directory.
+Discord and the Messages API faked and the bot's logs in a temporary directory.
 
     uv run --with-requirements requirements.txt python -m unittest test_actions
 """
@@ -11,13 +11,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fakes import Discord, answer, completion, isolate_rocky, openrouter, patch_all
+from fakes import Discord, answer, api_error, claude, isolate_rocky, patch_all
 import rocky_bot as j
 import rocky_book
 import rocky_harness as rh
 
 LONG = ("Granite is hard and old and it holds up mountains. " * 50).strip()  # past Discord's 2000 characters
-OUT_OF_CREDIT = (402, {"error": {"code": 402, "message": "Insufficient credits"}})
+OUT_OF_CREDIT = api_error(402, "billing_error", "There's an issue with your billing.")
+TURN = (1000 * .10 + 8000 * .01 + 20 * .50) / 1e6  # what a request answer() makes costs: 1,000 in, 8,000 read, 20 out
 # A made-up book, for think_back, laid out as the novel's text is: a heading a chapter, a paragraph a line
 STORY = """Contents
 
@@ -53,29 +54,33 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
                          (j, "recent_statuses", []), (j, "gen_lock", asyncio.Lock())])
 
     async def message(self, text, *replies):
-        # pip tagging Rocky in #bot-spam, and OpenRouter answering Rocky's requests with `replies` in turn
+        # pip tagging Rocky in #bot-spam, and the API answering Rocky's requests with `replies` in turn; what it was sent
+        # is in self.sent
         m = self.discord.say("bot-spam", "pip", text)
-        with openrouter(*replies) as s:
-            s.set_credit.side_effect = lambda ok: setattr(j, "has_credit", ok)  # what the bot then knows of its credit
+        with claude(*replies) as api:
+            api.set_credit.side_effect = lambda ok: setattr(j, "has_credit", ok)  # what the bot then knows of its credit
             await j.on_message(m)
+        self.sent = [c.kwargs for c in api.call_args_list]
         return m
 
     async def conversation(self):
         # pip asks and Rocky answers: plainly, after a tool round trip, after a secret note and a look at the bar, and
         # at length; then a status, and out of credit. Each message pip sent, with what the bot posted in answer, and
         # the status.
-        said = [await self.message("which rock is best", (200, completion(answer(  # the first, so nothing to read
-                    "Granite. Strong, strong, strong.", [("react", {"emoji": "🪨"})]), cached=0, written=8990))),
-                await self.message("my cat is called biscuit", (200, completion(answer(
-                    calls=[("remember", {"about": "pip", "fact": "has a cat called Biscuit"})]))),
-                    (200, completion(answer("Biscuit. Good name."))))]
-        said.append(await self.message("pick a number, and is the bar open?", (200, completion(answer(
+        said = [await self.message("which rock is best", answer(  # the first, so nothing to read
+                    "Granite. Strong, strong, strong.", [("react", {"emoji": "🪨"})], uncached=10, cached=0, written=8990)),
+                await self.message("my cat is called biscuit", answer(
+                    calls=[("remember", {"about": "pip", "fact": "has a cat called Biscuit"})]),
+                    answer("Biscuit. Good name."))]
+        said.append(await self.message("pick a number, and is the bar open?", answer(
             "Seven! Bar open!", [("note", {"text": "picked 7"}), ("bar", {})],  # written before it knew
-            reasoning=[{"type": "reasoning.text", "text": "seven, they said", "signature": "synthetic"}]))),
-            (200, completion(answer("Rocky pick number. Secret. Bar closed until four, sad sad sad.")))))
-        said.append(await self.message(f"tell me everything about granite. {LONG}", (200, completion(answer(LONG)))))
+            thinking=[("seven, they said", "synthetic-signature")]),
+            answer("Rocky pick number. Secret. Bar closed until four, sad sad sad.")))
+        self.bar_sent = self.sent
+        said.append(await self.message(f"tell me everything about granite. {LONG}", answer(LONG)))
+        self.after_bar_sent = self.sent
         j.heard = True
-        with openrouter((200, completion(answer("I feel granite is best rock."), cost=.0004))):
+        with claude(answer("I feel granite is best rock.")):
             await j.update_status.coro()
         said.append(await self.message("and basalt?", OUT_OF_CREDIT))
         said.append(await self.message("hello?", OUT_OF_CREDIT))  # still out: no request
@@ -107,11 +112,12 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([t.get("message_id") for t in lines],
                          [plain.id, remembered.id, secret.id, long.id, None, ran_out.id, broke.id])
         turns = {t.get("message_id"): t for t in lines}
-        for m, posted, requests in ((plain, plain_reply, 1), (remembered, remembered_reply, 2), (secret, secret_reply, 2),
-                                    (long, parts, 1)):
+        cold = (10 * .10 + 8990 * .20 + 20 * .50) / 1e6  # the first: all of it written to the cache, for an hour
+        for m, posted, requests, cost in ((plain, plain_reply, 1, cold), (remembered, remembered_reply, 2, 2 * TURN),
+                                          (secret, secret_reply, 2, 2 * TURN), (long, parts, 1, TURN)):
             t = turns[m.id]
             self.assertEqual((t["llm_model"], t["requests"], t["reply_id"]), (j.LLM_MODEL, requests, posted[0].id))
-            self.assertAlmostEqual(t["cost"], .0016 * requests)
+            self.assertAlmostEqual(t["cost"], cost)
             self.assertEqual([(c["purpose"], c["status"]) for c in t["api_calls"]], [("reply", 200)] * requests)
         self.assertEqual(turns[long.id]["reply_ids"], [m.id for m in parts])
         self.assertEqual(turns[plain.id]["reaction"], "🪨")
@@ -119,6 +125,26 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c["status"] for c in turns[ran_out.id]["api_calls"]], [402])
         self.assertNotIn("api_calls", turns[broke.id])
         self.assertEqual((turns[ran_out.id]["reply_id"], turns[broke.id]["reply_id"]), (gif[0].id, gif_again[0].id))
+
+        # Its thinking is kept in the log as it always was, and goes back unaltered, first in its turn, in the request
+        # after its calls — and not in the next turn's, as through OpenRouter
+        rh.flush()
+        saved = json.loads((rh.LOG_DIR / f"{plain.channel.id}.json").read_text())
+        thought, = [e for e in saved["events"] if e.get("reasoning")]
+        self.assertEqual(thought["reasoning"], [{"type": "reasoning.text", "text": "seven, they said",
+                                                 "signature": "synthetic-signature", "format": "anthropic-claude-v1",
+                                                 "index": 0}])
+        first, follow_up = self.bar_sent
+        thinking = lambda request: [(i, b) for m in request["messages"] if m["role"] == "assistant"
+                                    for i, b in enumerate(m["content"]) if b["type"] == "thinking"]
+        self.assertEqual(thinking(first), [])
+        self.assertEqual(thinking(follow_up), [(0, {"type": "thinking", "thinking": "seven, they said",
+                                                    "signature": "synthetic-signature"})])
+        self.assertEqual(follow_up["thinking"], {"type": "adaptive", "display": "summarized"})
+        self.assertEqual(follow_up["output_config"], {"effort": "low"})
+        results = follow_up["messages"][-1]["content"]  # both calls' results, in one message
+        self.assertEqual([(b["type"], b["tool_use_id"]) for b in results], [("tool_result", "toolu_0"), ("tool_result", "toolu_1")])
+        self.assertEqual(thinking(self.after_bar_sent[0]), [])
 
         # Rocky's log of the channel has the conversation, each of its messages by the id it was posted with
         rh.flush()
@@ -144,7 +170,7 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         # A turn that only reacts is saved too, though nothing in the channel changes after it, so a restart then keeps it
         async def thinking():  # longer than SAVE_AFTER: the message's own save is written meanwhile
             rh.flush()
-            return 200, completion(answer(calls=[("react", {"emoji": "🗿"})]))
+            return answer(calls=[("react", {"emoji": "🗿"})])
         j.has_credit = True
         nod = await self.message("granite forever", thinking())
         self.assertEqual((self.discord.answer(nod), self.discord.reactions[-1]), ([], (nod.id, "🗿")))
@@ -161,31 +187,32 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         j.channel_history.clear()
         j.history_loaded.clear()
         j.has_credit = True
-        with openrouter((200, completion(answer("Rocky not say.")))) as s:
+        with claude(answer("Rocky not say.")) as api:
             await j.on_message(self.discord.say("bot-spam", "pip", "what did you pick?"))
-        sent = json.dumps(s.post.call_args.kwargs["json"]["messages"], ensure_ascii=False)
+        sent = json.dumps(api.call_args.kwargs["messages"], ensure_ascii=False)
         self.assertIn("Biscuit. Good name.", sent)
         self.assertIn("Rocky pick number. Secret. Bar closed until four, sad sad sad.", sent)
         self.assertNotIn("-#", sent)
 
     async def test_rocky_thinks_back_to_the_book_and_answers_in_his_own_words(self):
         # Without the book he can't think back, and nothing he's told mentions it
-        with openrouter((200, completion(answer("Rocky not know.")))) as s:
+        with claude(answer("Rocky not know.")) as api:
             await j.on_message(self.discord.say("bot-spam", "pip", "how old is the lighthouse?"))
-        self.assertNotIn("think_back", json.dumps(s.post.call_args.kwargs["json"]))
+        self.assertNotIn("think_back", json.dumps(api.call_args.kwargs))
 
         (self.here / "book.txt").write_text(STORY)
         rocky_book.build(self.here / "book.txt", rocky_book.INDEX_PATH)
-        with openrouter((200, completion(answer("Very old!", [("think_back", {"what": "how old the lighthouse is"})]))),
-                        (200, completion(answer("Three hundred years. Older than me, almost.")))) as s:
+        with claude(answer("Very old!", [("think_back", {"what": "how old the lighthouse is"})]),
+                    answer("Three hundred years. Older than me, almost.")) as api:
             asked = self.discord.say("bot-spam", "pip", "how old is the lighthouse really?")
             await j.on_message(asked)
-        first, second = (c.kwargs["json"] for c in s.post.call_args_list)
-        self.assertIn("think_back", [t["function"]["name"] for t in first["tools"]])
-        self.assertIn("- think_back:", first["messages"][0]["content"][0]["text"])
+        first, second = (c.kwargs for c in api.call_args_list)
+        self.assertIn("think_back", [t["name"] for t in first["tools"]])
+        self.assertIn("- think_back:", first["system"][0]["text"])
         # The passages reach him in the request after his call, and what he guessed before them isn't posted
-        told = second["messages"][-1]
-        self.assertEqual((told["role"], told["tool_call_id"]), ("tool", "call_0"))
+        message = second["messages"][-1]
+        told = message["content"][-1]
+        self.assertEqual((message["role"], told["type"], told["tool_use_id"]), ("user", "tool_result", "toolu_0"))
         self.assertTrue(told["content"].startswith(rh.BOOK_HEAD))
         self.assertIn("three hundred years old", told["content"])
         self.assertNotIn("For the gulls", told["content"])  # the book ends where the story does
@@ -206,19 +233,19 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         (rh.LOG_DIR / f"{asked.channel.id}.json").unlink()
         j.channel_history.clear()
         j.history_loaded.clear()
-        with openrouter((200, completion(answer("Pinch.")))) as s:
+        with claude(answer("Pinch.")) as api:
             await j.on_message(self.discord.say("bot-spam", "pip", "who mends the nets?"))
-        sent = json.dumps(s.post.call_args.kwargs["json"]["messages"], ensure_ascii=False)
+        sent = json.dumps(api.call_args.kwargs["messages"], ensure_ascii=False)
         self.assertIn("Three hundred years. Older than me, almost.", sent)
         self.assertNotIn("📖", sent)
 
         # A book he can't read fails the call, not the turn: he's told, and says so himself
         rocky_book.INDEX_PATH.write_text('{"passages": "not a list"}')
-        with openrouter((200, completion(answer(calls=[("think_back", {"what": "the storm"})]))),
-                        (200, completion(answer("Rocky not remember storm now.")))) as s:
+        with claude(answer(calls=[("think_back", {"what": "the storm"})]),
+                    answer("Rocky not remember storm now.")) as api:
             asked = self.discord.say("bot-spam", "pip", "what happened in the storm?")
             await j.on_message(asked)
-        self.assertEqual(s.post.call_args.kwargs["json"]["messages"][-1]["content"], "You can't remember that right now.")
+        self.assertEqual(api.call_args.kwargs["messages"][-1]["content"][-1]["content"], "You can't remember that right now.")
         self.assertEqual([m.content for m in self.discord.answer(asked)],
                          ["Rocky not remember storm now.\n-# 📖 couldn't check the book"])
 
@@ -261,11 +288,12 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
                                       "**user** · cache breakpoint", "**assistant**", "**↳ calls react**",
                                       "**tool** · react's result"])
         self.assertIn('woke_you="yes">@Rocky which rock is best</message>\n```', embed["description"])
-        self.assertIn('```json\n{"emoji": "\\ud83e\\udea8"}\n```', embed["description"])  # as the API had it
+        self.assertIn('```json\n{"emoji": "🪨"}\n```', embed["description"])
         self.assertEqual(file, "")  # all of it is there
         # The first request read nothing from the cache, and wrote it all for the next
         self.assertEqual(fields("plain reply", 0)["Input cache"].splitlines()[1], "0 read · 8,990 written · 10 uncached")
-        self.assertEqual(fields("reply with action lines", 0)["Input cache"].splitlines()[1], "8,000 read · 1,000 uncached")
+        self.assertEqual(fields("reply with action lines", 0)["Input cache"].splitlines()[1],
+                         "8,000 read · 0 written · 1,000 uncached")
 
         # A round trip: the call, its result, then what it said. A note shows it was made, never what it says, and
         # thinking only that there was some
@@ -295,8 +323,9 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fields("plain reply", 1)["Model"], j.LLM_MODEL)
         self.assertEqual(answers["message that woke it"], answers["plain reply"])
-        self.assertEqual(fields("reply with action lines", 1)["Total cost"], "$0.003200 USD")
-        self.assertIn("Rocky · 2 requests", fields("reply with action lines", 2)["Write the reply"])
+        self.assertEqual(fields("reply with action lines", 1)["Total cost"], f"${2 * TURN:.6f} USD")
+        self.assertIn("Rocky · 2 requests · paid through Anthropic", fields("reply with action lines", 2)["Write the reply"])
+        self.assertNotIn("Billing", fields("reply with action lines", 2))  # all of it is Anthropic's, as the cost says
         self.assertEqual(answers["its second part"], answers["long reply's first part"])
         self.assertIn("Rocky · 1 request", fields("status", 2)["Write the status"])
 
@@ -305,7 +334,20 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fields(name, 1)["Model"], "None (out of credit)")
             self.assertNotIn("Model ID", fields(name, 2))
         self.assertIn("1 failed attempt", fields("out-of-credit gif", 2)["Write the reply"])
-        self.assertNotIn("footer", answers["gif while still out of credit"][2][1])  # nothing routed
+        for name in ("plain reply", "gif while still out of credit"):
+            self.assertNotIn("footer", answers[name][2][1])  # nothing through OpenRouter
+
+    async def test_a_refusal_posts_nothing_and_says_why_in_the_logs(self):
+        with self.assertLogs(j.log, "WARNING") as logs:
+            asked = await self.message("which rock is best", answer("Words it refused with.", refused="cyber"))
+        self.assertEqual(self.discord.answer(asked), [])
+        self.assertNotIn("Words it refused with", "".join(logs.output))
+        t, = [json.loads(line) for path in j.LOG_DIR.glob("*.jsonl") for line in path.read_text().splitlines()]
+        self.assertEqual((t["llm_refused"], t["requests"], t.get("reply")), ("cyber", 1, None))
+        self.assertEqual(j.stopped_early(t["api_calls"][0]), "refusal")
+        rh.flush()
+        saved = json.loads((rh.LOG_DIR / f"{asked.channel.id}.json").read_text())
+        self.assertEqual([e["type"] for e in saved["events"]], ["message"])  # nothing of it kept for later
 
 
 if __name__ == "__main__":
