@@ -396,6 +396,21 @@ def kept_thinking(blocks):
             kept.append({"type": "reasoning.encrypted", "data": b.data})
     return [k | {"format": "anthropic-claude-v1", "index": i} for i, k in enumerate(kept)] or None
 
+# A call's arguments as kept, for its tool_use: through OpenRouter, a call cut off mid-way was kept as it was, half
+# written — as no arguments, so the log can still be sent
+def call_input(arguments):
+    try:
+        args = json.loads(arguments)
+    except ValueError:
+        return {}
+    return args if isinstance(args, dict) else {}
+
+# Before the turn's first response, when it came after one of Rocky's messages from outside a turn (a status): a
+# request can't end with Rocky's (Haiku 5.5 takes it as a prefill, and refuses it). Not a str, so the cache mark stays
+# on people's turn.
+def your_turn():
+    return {"role": "user", "content": [{"type": "text", "text": "(Your turn.)"}]}
+
 def picture_block(url):  # a data: URL, as shrunk() makes them
     head, data = url.split(",", 1)
     return {"type": "image", "source": {"type": "base64", "media_type": head[5:].split(";")[0], "data": data}}
@@ -435,8 +450,12 @@ def render(log, bot_name, cache=True, until=None):
             content = [thinking_block(kept) for kept in e.get("reasoning") or []] if i >= current else []  # first
             if e["text"]:
                 content.append({"type": "text", "text": e["text"]})
-            content += [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": json.loads(c["arguments"])}
+            content += [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": call_input(c["arguments"])}
                         for c in e["calls"]]
+            if not content:  # a reply read back from Discord with no words left: nothing to send
+                continue
+            if i >= current and not e.get("elsewhere") and messages and messages[-1]["role"] == "assistant":
+                messages.append(your_turn())  # as its first request had it, in the ones after
             messages.append({"role": "assistant", "content": content})
         elif e["type"] == "result":
             result = {"type": "tool_result", "tool_use_id": e["id"], "content": e["content"]}
@@ -654,10 +673,8 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
             seen = turn.events[-1] if turn.events else began
             async with typing() if typing and request else contextlib.nullcontext():
                 request = render(log, bot_name, until=seen)
-                # A request can't end with Rocky (Haiku 5.5 takes it as a prefill, and refuses it): when one of its messages
-                # from outside a turn came after the one that woke it. Not a str, so the cache mark stays on people's turn
-                if request["messages"][-1]["role"] == "assistant":
-                    request["messages"].append({"role": "user", "content": [{"type": "text", "text": "(Your turn.)"}]})
+                if request["messages"][-1]["role"] == "assistant":  # one of its messages from outside a turn came last
+                    request["messages"].append(your_turn())
                 response = await j.llm_message(MAX_TOKENS, **request, tools=tools_for(log), **THINKING)
             if response is None:
                 break
@@ -799,8 +816,9 @@ def warm_request(log):
     tidy(log)
     last = next((e for e in reversed(log.events) if e["type"] in ("rocky", "result") and not e.get("elsewhere")), None)
     request = render(log, log.bot_name, until=last)
-    while request["messages"] and request["messages"][-1]["role"] != "user":
-        request["messages"].pop()
+    messages = request["messages"]
+    while messages and (messages[-1]["role"] != "user" or messages[-1]["content"][0].get("type") == "tool_result"):
+        messages.pop()  # the turn itself, its thinking too: what the cache mark before it covers is all it refreshes
     return request
 
 async def warm(log, request):

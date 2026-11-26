@@ -105,6 +105,22 @@ class RenderTests(_Case):
         self.said("pip", "rocky ok", 2, to_bot=True)["woke"] = True
         self.assertEqual(self.thinking(rh.render(self.log, "rocky")), [])  # the next turn: none
         self.assertEqual(self.log.events[1]["reasoning"], kept(1))  # and the log keeps it all
+        # A warm-up refreshes the cache up to the people's turn before Rocky's last: not that turn, nor its thinking
+        self.log.bot_name = "rocky"
+        warm = rh.warm_request(self.log)["messages"]
+        self.assertEqual((self.thinking({"messages": warm}), j.text_of(warm[-1]["content"]).endswith("rocky bar?</message>")),
+                         ([], True))
+
+    def test_what_the_api_wont_take_from_an_old_log_is_left_out(self):
+        self.said("pip", "rocky lol", 0, to_bot=True)
+        # a call cut off mid-way through OpenRouter, kept half written; a reply read back from Discord with no words
+        self.log.add("rocky", text="", calls=[{"id": "c1", "name": "react", "arguments": '{"emoji": "😂'}])
+        self.log.add("result", id="c1", content="That didn't work")
+        self.log.add("rocky", text="", calls=[])
+        self.said("pip", "rocky hi", 1, to_bot=True)
+        messages = rh.render(self.log, "rocky")["messages"]
+        self.assertEqual([m["role"] for m in messages], ["user", "user", "assistant", "user", "user"])
+        self.assertEqual(messages[2]["content"], [{"type": "tool_use", "id": "c1", "name": "react", "input": {}}])
 
     def test_after_a_tool_call_the_cache_mark_stays_where_the_last_request_ended(self):
         q = self.said("pip", "rocky remember soup", 0, to_bot=True)
@@ -394,6 +410,20 @@ class TurnTests(_Case):
         self.assertEqual(("woke" in earlier, "woke" in chatter, q["woke"]), (False, False, True))
         self.assertEqual((turn.text, llm.await_count), ("Soup good.", 1))
         self.assertEqual(llm.await_args.kwargs["messages"][-1]["role"], "user")  # never ending with Rocky's
+
+    async def test_after_a_status_its_turn_keeps_what_it_was_answering_in_its_follow_ups(self):
+        q = self.said("pip", "rocky bar?", 0, to_bot=True)
+        self.log.add("rocky", text="Mood: soup.", calls=[], id=902, elsewhere=True)  # a status, after what woke it
+        llm = AsyncMock(side_effect=[answer(calls=[("bar", {})], thinking=[("bar first", "signature-bar")]),
+                                     answer("Bar shut.")])
+        with patch.object(j, "llm_message", llm):
+            await rh.take_turn(self.log, q)
+        first, follow_up = (c.kwargs["messages"] for c in llm.await_args_list)
+        self.assertEqual(first[-1], rh.your_turn())
+        # the same, then its turn: its thinking first in its own message, not after the status's words
+        self.assertEqual(follow_up[:len(first)], first)
+        self.assertEqual(follow_up[len(first)]["content"][0], {"type": "thinking", "thinking": "bar first",
+                                                               "signature": "signature-bar"})
 
 
 class LookTests(_Case):
