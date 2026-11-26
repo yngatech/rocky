@@ -74,9 +74,9 @@ These all read the last `LOG_DAYS` (7) of `logs/`, finding the message by its id
 Haiku is Rocky, in every channel and DM. Each channel is Rocky's own conversation, kept by `rocky_harness.py` as an append-only log in `rocky_logs/` (gitignored).
 
 - **The log**: people's messages, reactions and edits come in as user turns, written as XML with who, when and what they reply to (`<message id="12" from="pip" at="18:01" to="you" woke_you="yes">…</message>`); Rocky's turns are the assistant's. It takes everything said in the channel, and after a restart what it missed is added at the end. A channel gets a log the first time Rocky is woken there, filled from its history back to half of `LOG_TOKENS` (`FILL`) or `FILL_SCAN` (3000) messages, leaving out `!nocontext` messages and reactions to the bot's old replies.
-- **Waking**: a tag, its name in plain text or a reply with the ping on wakes it. It thinks first (low effort), then what it writes is posted as its reply. A question always gets an answer in words.
+- **Waking**: a tag, its name in plain text or a reply with the ping on wakes it. It thinks first (low effort), then what it writes is posted as its reply. Spoken to, it answers in words, and a question or a request always gets them.
 - **Tools**, called in the same response:
-  - `react` puts an emoji on any message in the log: what it does instead of answering "lol", news or thanks.
+  - `react` puts an emoji on any message in the log: alongside its words, or on its own when words would add nothing.
   - `remember` keeps a short fact about someone, itself or a topic; `forget` drops one.
   - `bar` and `order` are for drinks at The Hail Mary, a made-up pub with a menu and prices, hours on the `TIMEZONE` clock, and days it doesn't open or a drink has run out (picked from the date, so the same all day).
   - `look` shows it the pictures in a message: its images, its embeds' (a Tenor gif, a link preview) and its stickers, up to 4, fetched again from Discord and shrunk to 1024px (a gif's first frame). Until then a picture is only its `[photo]` tag.

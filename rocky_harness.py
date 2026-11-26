@@ -94,6 +94,16 @@ UPDATES_FROM = ["rocky_harness.py"]  # changes to Rocky: commits touching these 
 # speak, even asked to prove it could. Told to write first, on a fresh chat it reacted and spoke in 4 of 4 asked to; on
 # the live log, full of turns that only reacted, in 0 of 6, though "did you have a good weekend?" got words in 3 of 3
 # where it had in 1 of 4.
+# Words when spoken to: told that most of what isn't a question or a request "a friend would just react to", with a
+# list of such messages, it only reacted in about half its live turns, to some questions too. Told to answer in words,
+# and to react alone only when words would add nothing, 16 kinds of message to it (questions, requests, a greeting, its
+# name, a correction, a tease, news, a moan, thanks, a laugh, replies to it) replayed on a fresh chat only got a
+# reaction in 1 of 60, where they had in 9 of 60. On the live log the wording alone moved little: 20 of 60, where the
+# old had 26 and 29, and other wordings tried had 30 to 36. Saying many earlier turns had only reacted where words
+# were wanted changed nothing (36 of 60 either way). The <update> after all those turns did it:
+# after "Rocky now answers in words when he's spoken to, not with only a reaction", 0 of 60; "have Rocky answer in
+# words when he's spoken to, not with only a reaction", 3 of 60; "reword what Rocky's prompt says about reacting", 15
+# of 60. Replies stayed as long, about 13 words.
 # Several at once: two questions to it from two people before its turn, replayed on the live log. Told only the newest
 # was its to answer (and the other not marked), it answered one of them in 3 of 9 — once the one it wasn't woken by —
 # and both in none. Told to answer all of them, saying who's who, both in 3 of 9; the rest, on both, only reacted.
@@ -102,7 +112,7 @@ HARNESS = """
 This is #{channel} on Discord, as it happens. People's messages come to you as <message> elements: who sent it (from), when (at, {timezone} time), its number (id), and the message it replies to (reply_to). to="you" marks one sent to you — tagging you, or replying to you. woke_you="yes" marks each that woke you. The ones since your last turn are what you're answering now — several, when they came at once: answer them all in your one message, saying who's who. Older ones have had their turn. Reactions, edits and deletions show up as they happen: an <edit> marked to="you" made its message one to you. Your own earlier messages are your turns. An <update> is a change to you, like a new tool, at the point it happened: tell them about it when they ask what's new with you, or it's what's being talked about, but don't announce it out of nowhere.
 
 Your turn is what you write: it's posted in the channel as your reply to the first message that woke you. So write only {bot}'s message, in his voice — never notes about the chat or about what {bot} would say — and don't start it with @ their name. You can also use tools. Your response ends at your first call, so write your message first and then make your calls, in the same response — a call on its own, with no message, is only for what needs no answer. Don't wait to see what a tool did before you speak, except to look and at the bar (below):
-- react: put an emoji on a message. Most of what's said to you that isn't a question or a request — "lol", "welp", "bad rocky", news, moans, thanks, polls — a friend would just react to, not answer: react, and write nothing. But a question to you always gets an answer in words, yes-or-no ones too, and so does a request; write a message too when you truly have something to add. To react and speak, write the message, then react: a reaction first leaves your turn with nothing said.
+- react: put an emoji on a message. When someone speaks to you, answer in words. A question to you always gets an answer in words, yes-or-no ones too, and so does a request. A reaction can go with your words, but on its own it reads as not answering, so it's only for when words would add nothing. To react and speak, write the message, then react: a reaction first leaves your turn with nothing said.
 {memory_tools}- note: write something down for yourself.
 - bar: see whether the bar is open, and what's on.
 - order: order a drink at the bar, for you or for someone here.
