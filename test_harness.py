@@ -326,15 +326,15 @@ class TurnTests(_Case):
                                                       "-# 🍺 checked the bar",
                                                       "-# 🍺 couldn't order Moon shine <https://example.org/moon>"])
 
-    async def test_only_reacting_or_nothing_is_one_request(self):
-        turn, llm = await self.turn(answer(calls=[("react", {"emoji": "😂"})]))
-        self.assertEqual((turn.text, turn.reactions, llm.await_count), ("", [(1, "😂")], 1))
+    async def test_after_a_reaction_it_can_speak_once_but_a_second_reaction_ends_its_turn(self):
+        turn, llm = await self.turn(answer(calls=[("react", {"emoji": "😂"})]),
+                                    answer(calls=[("note", {"text": "they laughed"}), ("react", {"emoji": "😂"})]),
+                                    answer("never asked"))
+        self.assertEqual((turn.text, turn.reactions, llm.await_count), ("", [(1, "😂"), (1, "😂")], 2))
         events = len(self.log.events)
         turn, llm = await self.turn(answer("(silent)"))
         self.assertEqual((turn.text, turn.reactions, llm.await_count), ("", [], 1))
         self.assertEqual(len(self.log.events), events + 1)  # just the message — an empty turn isn't kept
-        turn, llm = await self.turn(answer(calls=[("note", {"text": "picked 4"}), ("react", {"emoji": "🤫"})]))
-        self.assertEqual((turn.reactions, llm.await_count), ([(3, "🤫")], 1))
 
     async def test_a_message_that_comes_while_it_waits_goes_after_its_turn(self):
         first = self.said("pip", "rocky soup?", 0, to_bot=True)

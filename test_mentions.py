@@ -599,7 +599,8 @@ class RockyHarnessTests(_Handling):
     async def test_only_reacting_posts_nothing_and_never_shows_typing(self):
         m = self.said("lol")
         self.channel.typing = Mock(side_effect=lambda: contextlib.nullcontext())
-        with patch.object(j, "llm_message", AsyncMock(return_value=answer(calls=[("react", {"emoji": "😂"})]))):
+        # it reacts, sees it did, and then has nothing to say
+        with patch.object(j, "llm_message", AsyncMock(side_effect=[answer(calls=[("react", {"emoji": "😂"})]), answer()])):
             await j.handle(m)
         m.reply.assert_not_awaited()
         self.channel.typing.assert_not_called()  # it would have lingered ~10s after the reaction
@@ -692,7 +693,7 @@ class RockyHarnessTests(_Handling):
             await j.on_message(named)
         await j.on_message(news := self.said("the kettle broke", name="kettle", ping=False))
         react = answer(calls=[("react", {"emoji": "😢", "message": rh.logs[self.channel.id].ids[str(news.id)]})])
-        with patch.object(j, "llm_message", AsyncMock(return_value=react)):
+        with patch.object(j, "llm_message", AsyncMock(side_effect=[react, answer()])):
             await j.on_message(self.said("testbot did you hear", ping=False))
         self.partials[news.id].add_reaction.assert_awaited_once_with("😢")
         await j.on_message(milk := self.said("where's the milk", ping=False))

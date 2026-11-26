@@ -167,18 +167,30 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
                           (LONG, parts[0].id)))
         self.assertEqual(rh.memory("400")["facts"][0]["fact"], "has a cat called Biscuit")
 
-        # A turn that only reacts is saved too, though nothing in the channel changes after it, so a restart then keeps it
+        # After a reaction it sees that it reacted, and can say something too, or nothing. A turn that only reacts is
+        # saved too, though nothing in the channel changes after it, so a restart then keeps it — without the empty
+        # response that ended it
         async def thinking():  # longer than SAVE_AFTER: the message's own save is written meanwhile
             rh.flush()
             return answer(calls=[("react", {"emoji": "🗿"})])
         j.has_credit = True
-        nod = await self.message("granite forever", thinking())
+        nod = await self.message("granite forever", thinking(), answer())
         self.assertEqual((self.discord.answer(nod), self.discord.reactions[-1]), ([], (nod.id, "🗿")))
+        self.assertEqual(self.sent[1]["messages"][-1]["content"],
+                         [{"type": "tool_result", "tool_use_id": "toolu_0", "content": "Reacted."}])
         rh.flush()  # what a restart writes
         saved = json.loads((rh.LOG_DIR / f"{nod.channel.id}.json").read_text())
         self.assertEqual([(e["type"], e.get("text")) for e in saved["events"][-3:]],
                          [("message", "@Rocky granite forever"), ("rocky", ""), ("result", None)])
         self.assertEqual(saved["asked"], rh.logs[nod.channel.id].asked.isoformat())
+        asked = await self.message("granite or basalt?", answer(calls=[("react", {"emoji": "🤔"})]),
+                                   answer("Granite. Basalt too dark, dark, dark."))
+        self.assertEqual(([m.content for m in self.discord.answer(asked)], self.discord.reactions[-1]),
+                         (["Granite. Basalt too dark, dark, dark."], (asked.id, "🤔")))
+        # the turn before it reads as it ended, a reaction with nothing said
+        react, result, message = self.sent[0]["messages"][-3:]
+        self.assertEqual(([b["type"] for b in react["content"]], result["content"][0]["content"], message["role"]),
+                         (["tool_use"], "Reacted.", "user"))
 
         # A log started afresh reads the channel back from Discord: Rocky's replies come back as it wrote them, and
         # the lines under them don't, so it never reads them as its own words
