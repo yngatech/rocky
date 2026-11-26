@@ -100,11 +100,14 @@ NO_UPDATE = "Rocky-update: none"     # a line of its own in a commit's message k
 # look: until it looks, a picture is a [photo] tag. Told to look and write nothing yet, on the live log it looked at a
 # synthetic photo sent to it 6 times in 6 and said what was in it (pepperoni pizza; a sign's words); with no picture,
 # it didn't look.
-# Message before calls: a response ends at its first tool call, and told only to "make your calls and write your message
-# in the same response", it reacted first and wrote nothing — in none of its first 628 live turns did it react and
-# speak, even asked to prove it could. Told to write first, on a fresh chat it reacted and spoke in 4 of 4 asked to; on
-# the live log, full of turns that only reacted, in 0 of 6, though "did you have a good weekend?" got words in 3 of 3
-# where it had in 1 of 4.
+# Reacting, then speaking: a response ends at its first tool call, and it reacts before it writes. While a reaction
+# ended its turn, told to write first or not, 1 of 729 live turns reacted and spoke, and 246 only reacted, to questions
+# too. Now it sees what a reaction did, as after any call, and speaks then. Replayed on the live log (8 questions, 4
+# requests and 8 thanks, laughs and nods, 3 times each, after the <update> it got): words for 24 of 24 questions, where
+# they had 11, and 12 of 12 requests, where 8 — and for 24 of 24 of the thanks and laughs, where 2, as they already had
+# on a fresh chat, before and after. Told, in the react line or the result, that it could end its turn with nothing, or
+# with the reaction as its answer, a reaction alone stayed rare (0 to 5 of 24 of those), so the result stays
+# "Reacted.". It never said it reacted, but in 5 or 6 of 24 its words echoed the emoji ("thumbs up back").
 # Words when spoken to: told that most of what isn't a question or a request "a friend would just react to", with a
 # list of such messages, it only reacted in about half its live turns, to some questions too. Told to answer in words,
 # and to react alone only when words would add nothing, 16 kinds of message to it (questions, requests, a greeting, its
@@ -122,8 +125,8 @@ HARNESS = """
 
 This is #{channel} on Discord, as it happens. People's messages come to you as <message> elements: who sent it (from), when (at, {timezone} time), its number (id), and the message it replies to (reply_to). to="you" marks one sent to you — tagging you, or replying to you. woke_you="yes" marks each that woke you. The ones since your last turn are what you're answering now — several, when they came at once: answer them all in your one message, saying who's who. Older ones have had their turn. Reactions, edits and deletions show up as they happen: an <edit> marked to="you" made its message one to you. Your own earlier messages are your turns. An <update> is a change to you, like a new tool, at the point it happened: tell them about it when they ask what's new with you, or it's what's being talked about, but don't announce it out of nowhere.
 
-Your turn is what you write: it's posted in the channel as your reply to the first message that woke you. So write only {bot}'s message, in his voice — never notes about the chat or about what {bot} would say — and don't start it with @ their name. You can also use tools. Your response ends at your first call, so write your message first and then make your calls, in the same response — a call on its own, with no message, is only for what needs no answer. Don't wait to see what a tool did before you speak, except to look{think_back} and at the bar (below):
-- react: put an emoji on a message. When someone speaks to you, answer in words. A question to you always gets an answer in words, yes-or-no ones too, and so does a request. A reaction can go with your words, but on its own it reads as not answering, so it's only for when words would add nothing. To react and speak, write the message, then react: a reaction first leaves your turn with nothing said.
+Your turn is what you write: it's posted in the channel as your reply to the first message that woke you. So write only {bot}'s message, in his voice — never notes about the chat or about what {bot} would say — and don't start it with @ their name. You can also use tools. Your message can come before your calls, in the same response, or after them, once you've seen what they did. Wait to see what a tool did before you speak only to look{think_back} and at the bar (below):
+- react: put an emoji on a message. When someone speaks to you, answer in words. A question to you always gets an answer in words, yes-or-no ones too, and so does a request. A reaction can go with your words, but on its own it reads as not answering, so it's only for when words would add nothing.
 {memory_tools}- note: write something down for yourself.
 - bar: see whether the bar is open, and what's on.
 - order: order a drink at the bar, for you or for someone here.
@@ -624,11 +627,12 @@ def said(content, bot_name):
     text = j.clean_llm(content or "", bot_name)
     return "" if not re.search(r"\w", text) or re.fullmatch(r"[(\[*].*[)\]*]", text) else text
 
-# Rocky's turn after `waking` (already in the log): its message and tool calls, usually in one response. Only a turn
-# that just kept or dropped memories, noted, or went to the bar gets another request, for what it then says. Its
-# requests go through rocky_bot.llm_message, which counts their cost on the trace.
-# typing: the channel's typing() — shown only for that second request. Discord shows "rocky is typing" for ~10s after
-# it's sent, and nothing stops it but a message, so shown while it decided, it lingered after a turn that only reacted.
+# Rocky's turn after `waking` (already in the log): its message and tool calls, often in one response. A response that
+# made calls and said nothing gets another request, for what it then says — or doesn't, after a reaction. Its requests
+# go through rocky_bot.llm_message, which counts their cost on the trace.
+# typing: the channel's typing() — shown only for a request after one that did more than react. Discord shows "rocky
+# is typing" for ~10s after it's sent, and nothing stops it but a message, so shown while it decided, it lingered after
+# a turn that only reacted.
 def tools_for(log):
     left = set() if log.space else set(MEMORY_CALLS)
     if not rocky_book.available():
@@ -668,10 +672,12 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
     # Where its turn goes: what came while it was deciding comes after, has its own turn, and isn't in its follow-ups.
     # Put before, the next turn's request ended with Rocky's, and Haiku 5.5 refused it (no prefill)
     began = log.events[-1]
+    reacted = None  # whether its last response only reacted — none yet
     try:
-        for request in range(1 + FOLLOW_UPS):
+        for _ in range(1 + FOLLOW_UPS):
             seen = turn.events[-1] if turn.events else began
-            async with typing() if typing and request else contextlib.nullcontext():
+            # no typing while it decides, nor after a reaction: it may say nothing
+            async with typing() if typing and reacted is False else contextlib.nullcontext():
                 request = render(log, bot_name, until=seen)
                 if request["messages"][-1]["role"] == "assistant":  # one of its messages from outside a turn came last
                     request["messages"].append(your_turn())
@@ -716,10 +722,11 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
             if text:
                 turn.text, turn.spoke = text, e
                 break
-            # A reaction answers; a memory or a note on its own doesn't, so it gets a request to say something, and
-            # so do the bar and a look, for what it then says
-            if not waits and any(c["name"] == "react" for c in calls) and all(c["name"] in ("react", "note") for c in calls):
+            # After a reaction it sees it reacted, and can still speak — after a second, it's done
+            only_reacted = any(c["name"] == "react" for c in calls) and all(c["name"] in ("react", "note") for c in calls)
+            if only_reacted and reacted:
                 break
+            reacted = only_reacted
     finally:
         if token is not None:
             j.trace.reset(token)
