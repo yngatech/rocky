@@ -11,7 +11,8 @@ calls and their results, its reactions, and what it said. Nothing is written bac
     python rocky_replay.py "@rocky soup?" --with "fern: @rocky tea?"  # another to it, there before its turn
 
 Run on master and on your branch to compare. It reads the live checkout's files (where this checkout's .env links to,
-or this one's): its Rocky log, memories, rocky_lines.txt and rocky_body.txt. A message comes 2 minutes after the log's last event,
+or this one's): its Rocky log, memories, rocky_lines.txt, rocky_body.txt and the book's passages (rocky_book.json).
+What Rocky remembers from the book is only counted, never printed. A message comes 2 minutes after the log's last event,
 unless --at says when. On OPENROUTER_API_KEY_EVAL, one request at a time: a turn on the live log is ~70K tokens, and
 the first of a run writes it to the cache, which counts towards Anthropic's input tokens a minute.
 """
@@ -28,6 +29,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import rocky_bot as j
+import rocky_book
 import rocky_harness as rh
 
 HERE = Path(__file__).parent
@@ -50,6 +52,8 @@ def load(live, channel_id, fresh, at):
         j.ROCKY_LINES = j.read_lines(live / "rocky_lines.txt")
     if (live / "rocky_body.txt").exists():
         j.ROCKY_BODY = j.read_lines(live / "rocky_body.txt", "\n\n")
+    if (live / rocky_book.INDEX_PATH.name).exists():
+        rocky_book.INDEX_PATH = live / rocky_book.INDEX_PATH.name
     try:
         memories = json.loads(rh.MEMORY_PATH.read_text())
     except FileNotFoundError:
@@ -81,10 +85,13 @@ async def replay(base, memories, text, when, author, picture=None, also=()):
     # Only the replayed message has a picture to see — the log's have no Discord to fetch theirs from
     rh.pictures = AsyncMock(side_effect=lambda _, n: [picture] if picture and n == sent["n"] else None)
     turn = await rh.take_turn(log, sent)
-    steps = []
+    steps, books = [], set()
     for e in turn.events:
         if e["type"] == "rocky":
             steps += [f"{c['name']}{c['arguments']}" for c in e["calls"]]
+            books |= {c["id"] for c in e["calls"] if c["name"] == "think_back"}
+        elif e["id"] in books:  # the book's words stay out of the terminal
+            steps.append(f"  → {e['content'].count('<passage>')} passages, {len(e['content'])} chars")
         else:
             steps.append(f"  → {e['content'][:RESULT_CHARS]}")
     return turn, steps
@@ -129,7 +136,8 @@ async def main():
     live = live_dir()
     base, memories, when = load(live, channel, args.fresh, at)
     print(f"{'fresh chat' if args.fresh else f'{live.name} log: {len(base.events)} events'}, "
-          f"{len(j.ROCKY_LINES)} Rocky lines, {len(j.ROCKY_BODY)} body passages, at {when:%a %d %b %H:%M}")
+          f"{len(j.ROCKY_LINES)} Rocky lines, {len(j.ROCKY_BODY)} body passages, "
+          f"{'the book' if rocky_book.available() else 'no book'}, at {when:%a %d %b %H:%M}")
     spent = {"cost": 0.0, "requests": 0}
     j.trace.set(spent)
     for text in messages:

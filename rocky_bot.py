@@ -585,7 +585,7 @@ NO_CONTEXT = re.compile(r"(?<!\S)!nocontext(?!\S)[ \t]*", re.IGNORECASE)
 SIDE_LINK = re.compile(r" \[↳(?: thread)?\]\(https://discord\.com/channels/(?:@me|\d+)/\d+/\d+\)$")
 # So are the lines under Rocky's messages saying what it did (action_lines)
 ACTION_LINES = re.compile(r"^-# (?:🍺 (?:ordered|couldn't order|checked the bar)|👀 (?:looked at|couldn't see)|📝 made a note"
-                          r"|🧠 remembered:|🗑️ forgot:)(?: .*)?$\n?", re.MULTILINE)
+                          r"|📖 (?:checked|couldn't check) the book|🧠 remembered:|🗑️ forgot:)(?: .*)?$\n?", re.MULTILINE)
 
 def no_context(m):  # not in a !nocontext thread, which it carries on
     return should_respond(m) and NO_CONTEXT.search(strip_mention(m)) is not None and not rh.no_memories(m.channel)
@@ -1140,9 +1140,9 @@ def plural(n, word):
     return f"{n:,} {word}{'' if n == 1 else 's'}"
 
 # A request as Context shows it, for the trace: each message as it was sent, but for what Context mustn't show — the
-# system prompt only by its length and <memories> by how many facts, a note without what it says, thinking and
-# pictures only by how many. sent: the request, system prompt first, then its answer; turn: how many messages at its
-# end are the turn's, the people's message that woke it first; memories: the facts in <memories>, if it has them.
+# system prompt only by its length and <memories> by how many facts, a note without what it says, thinking, pictures
+# and the book's passages (think_back: they're only ever in Discord in Rocky's own words) only by how many. sent: the
+# request, system prompt first, then its answer; turn: how many messages at its end are the turn's, the people's message that woke it first; memories: the facts in <memories>, if it has them.
 def request_record(sent, turn, memories=None):
     names, messages = {}, []
     for i, m in enumerate(sent):
@@ -1167,6 +1167,8 @@ def request_record(sent, turn, memories=None):
             names |= {c["id"]: c["function"]["name"] for c in m["tool_calls"]}
         if m["role"] == "tool":
             x["name"] = names.get(m.get("tool_call_id"))
+            if x["name"] == "think_back" and "<passage>" in x.get("content", ""):
+                x["passages"] = x.pop("content").count("<passage>")
         messages.append(x)
     head = 1 + (memories is not None)
     end = max(head, len(messages) - turn)
@@ -1185,6 +1187,8 @@ def pieces(m):
         about.append(f"{m['name']}'s result")
     if m.get("pictures"):
         about.append(plural(m["pictures"], "picture"))
+    if m.get("passages"):
+        about.append(f"{plural(m['passages'], 'passage')} from the book, not shown")
     if m.get("thinking"):
         about.append(f"{plural(m['thinking'], 'thinking block')}, hidden")
     if m.get("cached"):
@@ -1579,6 +1583,10 @@ def action_lines(shown):
             line = f"👀 looked at {'the picture' if b == 1 else f'{b} pictures'}" if b else "👀 couldn't see a picture"
         elif kind == "note":
             line = "📝 made a note"
+        elif kind == "book":  # not what it looked for: that can give away how the story ends
+            line = "📖 checked the book" if a else "📖 couldn't check the book"
+            if f"-# {line}" in lines:
+                continue
         elif kind == "remember":
             line = f"🧠 remembered: {fact}"
         else:  # forget

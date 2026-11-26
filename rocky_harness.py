@@ -3,10 +3,10 @@ Rocky as an agent: an LLM is Rocky, the channel is its conversation, and what it
 
 Each channel is an append-only log of events. People's messages, reactions and edits come in as user turns, written as
 XML with who, when and what they reply to. Rocky's turns are the assistant's: it thinks, then its text is its message,
-and its tool calls (react, remember, forget, note, bar, order, look) are kept with their results. Nothing in the log is
-rewritten, so every request starts with the one before it and the model's prompt cache covers all but the newest
-events. A <memories> block before the log is a snapshot, rebuilt — and deleted messages blanked — only after a quiet
-stretch (tidy): at a jump, when the log outgrows LOG_TOKENS and its oldest half goes, at a warm-up, or after
+and its tool calls (react, remember, forget, note, bar, order, look, think_back) are kept with their results. Nothing in
+the log is rewritten, so every request starts with the one before it and the model's prompt cache covers all but the
+newest events. A <memories> block before the log is a snapshot, rebuilt — and deleted messages blanked — only after a
+quiet stretch (tidy): at a jump, when the log outgrows LOG_TOKENS and its oldest half goes, at a warm-up, or after
 CACHE_HOURS without a request.
 
 A channel Rocky has taken a turn in lately has its cache kept warm: before it lapses, a request that reads the log up
@@ -30,6 +30,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from PIL import Image, UnidentifiedImageError
+
+import rocky_book
 
 j = None
 
@@ -78,7 +80,8 @@ UPDATES_FROM = ["rocky_harness.py"]  # changes to Rocky: commits touching these 
 # told to say it in words, it did in 8 of 8.
 # The bar's names: with no story of its own, asked what happened to the Blip-A it read the bar's menu, 3 of 3; told
 # its story and that the bar and drinks are only named after it, it called bar for none of 120 story questions, and
-# still went to the bar (bar or order) for a drink or the hours, 18 of 18.
+# still went to the bar (bar or order) for a drink or the hours, 18 of 18. Asked "what's the Petrova line?" on the live
+# log, it read the bar's sour 9 times in 9, until the paragraph named that and the other drinks' names too.
 # <update>s: told to bring one up "only when it's what's being talked about or someone asks", it told "anything new
 # with you today?" about the bar in 1 of 5 replays; told to when they ask what's new, 6 of 6. Asked about lunch, it
 # announced it in none of 11.
@@ -86,6 +89,12 @@ UPDATES_FROM = ["rocky_harness.py"]  # changes to Rocky: commits touching these 
 # story, so he answers about his ship and Astrophage instead of the bar's drinks" he only reacted 🤔 to "where's your
 # ship" or "how did you and Grace meet" in 10 of 18; after "give Rocky his own story: his home, his ship,
 # Astrophage and Grace", 2 of 18, and with no update, 3 of 18.
+# think_back: asked 8 things from the book that his story and facts don't say, 3 times each, he got 1 of 24 right
+# without it on a fresh chat; with it, 11 of 24 there and 11 on the live log. BM25 over the words he looks for found a
+# passage that answers it in the top 3 for 17 of 29 questions, as well as local embedding models did (15 to 18). Told
+# to think back "even when you think you know", he did for 18 of 24 fresh and 21 of 24 live; never for everyday chat
+# or the bar, nor on a fresh chat for what his facts say, though for 5 of 6 of those live (and answered them right).
+# Asked to look for the "words it would use", his look-ups read like the book's narration, and found more.
 # look: until it looks, a picture is a [photo] tag. Told to look and write nothing yet, on the live log it looked at a
 # synthetic photo sent to it 6 times in 6 and said what was in it (pepperoni pizza; a sign's words); with no picture,
 # it didn't look.
@@ -111,15 +120,15 @@ HARNESS = """
 
 This is #{channel} on Discord, as it happens. People's messages come to you as <message> elements: who sent it (from), when (at, {timezone} time), its number (id), and the message it replies to (reply_to). to="you" marks one sent to you — tagging you, or replying to you. woke_you="yes" marks each that woke you. The ones since your last turn are what you're answering now — several, when they came at once: answer them all in your one message, saying who's who. Older ones have had their turn. Reactions, edits and deletions show up as they happen: an <edit> marked to="you" made its message one to you. Your own earlier messages are your turns. An <update> is a change to you, like a new tool, at the point it happened: tell them about it when they ask what's new with you, or it's what's being talked about, but don't announce it out of nowhere.
 
-Your turn is what you write: it's posted in the channel as your reply to the first message that woke you. So write only {bot}'s message, in his voice — never notes about the chat or about what {bot} would say — and don't start it with @ their name. You can also use tools. Your response ends at your first call, so write your message first and then make your calls, in the same response — a call on its own, with no message, is only for what needs no answer. Don't wait to see what a tool did before you speak, except to look and at the bar (below):
+Your turn is what you write: it's posted in the channel as your reply to the first message that woke you. So write only {bot}'s message, in his voice — never notes about the chat or about what {bot} would say — and don't start it with @ their name. You can also use tools. Your response ends at your first call, so write your message first and then make your calls, in the same response — a call on its own, with no message, is only for what needs no answer. Don't wait to see what a tool did before you speak, except to look{think_back} and at the bar (below):
 - react: put an emoji on a message. When someone speaks to you, answer in words. A question to you always gets an answer in words, yes-or-no ones too, and so does a request. A reaction can go with your words, but on its own it reads as not answering, so it's only for when words would add nothing. To react and speak, write the message, then react: a reaction first leaves your turn with nothing said.
 {memory_tools}- note: write something down for yourself.
 - bar: see whether the bar is open, and what's on.
 - order: order a drink at the bar, for you or for someone here.
 - look: see the pictures in a message. A [photo], [gif] or [sticker], or a link, is all you know of a picture until you look — so when you're shown one, or asked about one, look and write nothing yet: you'll see it, and then answer. Never say what's in a picture you haven't looked at.
-{memories}
+{book_tool}{memories}
 
-The bar is {bar}, down the road, named after Grace's ship, and its drinks after things from your story too: a question about Astrophage, the Blip-A or Tau Ceti themselves is about your life, not the bar, so answer it without calling bar. It keeps hours, and some days it doesn't open at all, or something's run out — so when you want a drink, or someone asks you to get one, call bar or order and write nothing yet: you'll see what the bar says, and then tell them in words what happened — open or not, ordered or not — not just a reaction.
+The bar is {bar}, down the road, named after Grace's ship, and its drinks after things from your story too: a question about Astrophage, the Blip-A, Tau Ceti, Eridani, the Petrova line or xenonite themselves is about your life, not the bar, so answer it without calling bar. It keeps hours, and some days it doesn't open at all, or something's run out — so when you want a drink, or someone asks you to get one, call bar or order and write nothing yet: you'll see what the bar says, and then tell them in words what happened — open or not, ordered or not — not just a reaction.
 
 Nobody sees your notes or your thinking: only your message and your reactions are seen. So when you're asked to keep something to yourself — a number you've picked, the answer in a guessing game — note the actual number or answer, and leave it out of your message. It's a game, so play it fair: check each guess against your note and say whether they've got it (yes, or no), and say the answer once they've got it or give up. Your notes stay with your turns, so you'll still know it later."""
 
@@ -131,6 +140,10 @@ MEMORIES = "What you've remembered is in <memories>, and in your remember calls 
 NO_MEMORIES = ("This thread is apart from the rest of the server: you have no memories here, and nothing said here is "
                "kept for later. Never mention reacting or noting in your message.")
 MEMORY_CALLS = {"remember", "forget"}
+# The part of HARNESS for think_back — only with the book (rocky_book.available)
+BOOK_TOOL = """- think_back: remember something from your old life that your story and what you are don't say — your age, your crew, your people's ways, what happened with Grace and when, a name or word from back then. When someone asks about your past, your people or what happened, and they don't answer it, think back and write nothing yet, even when you think you know — what you don't check you often get wrong — and then answer from what you remember. Not for what your story and what you are already say, everyday chat or the bar. What comes back is Grace's telling of it: there "I" is Grace, and "Rocky" or "he" is you. It's what you lived, seen through your friend's eyes: answer from it as your own memory, in your own words: never quote it, not even a line someone says in it. Don't remember what comes back: you can always think back again. How it all ended is still only for when they ask.
+"""
+BOOK_HEAD = "What you remember, as Grace told it: his \"I\" is Grace, and \"Rocky\" is you. Say it in your own words, never his."
 
 TOOLS = [
     {"type": "function", "function": {
@@ -163,9 +176,13 @@ TOOLS = [
         "name": "look", "description": "See the pictures in a message: photos, gifs, stickers and links' previews.",
         "parameters": {"type": "object", "properties": {
             "message": {"type": "integer", "description": "The message's id; leave out for the first that woke you"}}}}},
+    {"type": "function", "function": {
+        "name": "think_back", "description": "Remember something from your life before this server: the parts of Grace's telling where it happens.",
+        "parameters": {"type": "object", "required": ["what"], "properties": {
+            "what": {"type": "string", "description": "What to remember, written as Grace would tell it in his story: a sentence with its names and the words it would use, like \"Rocky shows me the workshop on his ship, the Blip-A\""}}}}},
 ]
 # Calls whose result it needs before it speaks: what it wrote alongside one isn't posted
-WAIT_FOR = {"bar", "order", "look"}
+WAIT_FOR = {"bar", "order", "look", "think_back"}
 
 
 # The bar: a pub with a menu and hours, in TIMEZONE. Some days it doesn't open, and some days a drink has run out —
@@ -372,9 +389,11 @@ def memories_text(log):
 # prompt, the memories, and the end of the request — the next request starts with all of it.
 # until: the last event to show — a turn's requests see the log as it was when it began, and what it's done since
 def render(log, bot_name, cache=True, until=None):
+    book = rocky_book.available()
     system = j.rocky_prompt(bot_name) + HARNESS.format(
-        channel=log.channel, timezone=j.TIMEZONE.key, bot=bot_name, bar=BAR,
-        memory_tools=MEMORY_TOOLS.format(bot=bot_name) if log.space else "", memories=MEMORIES if log.space else NO_MEMORIES)
+        channel=log.channel, timezone=j.TIMEZONE.key, bot=bot_name, bar=BAR, think_back=", to think back" if book else "",
+        book_tool=BOOK_TOOL if book else "", memory_tools=MEMORY_TOOLS.format(bot=bot_name) if log.space else "",
+        memories=MEMORIES if log.space else NO_MEMORIES)
     mark = lambda text: [{"type": "text", "text": text, **({"cache_control": CACHE} if cache else {})}]
     messages = [{"role": "system", "content": mark(system) if cache else system}]
     if log.space:
@@ -556,6 +575,23 @@ async def look(log, arguments, waking):
         return n, f"Message {n} has no pictures.", []
     return n, f"Message {n}'s {'picture' if len(found) == 1 else f'{len(found)} pictures'}:", found
 
+# think_back: what comes back, and whether anything did. The search is in a thread, so the loop goes on meanwhile.
+async def think_back(arguments):
+    try:
+        what = str(json.loads(arguments or "{}").get("what") or "").strip()
+    except (ValueError, AttributeError):
+        what = ""
+    if not what:
+        return "Remember what? Say what you're thinking back to.", False
+    try:
+        found = await asyncio.to_thread(rocky_book.search, what)
+    except Exception as e:
+        j.log.warning(f"[ROCKY] thinking back failed: {type(e).__name__}")  # not e: it can hold the book's text
+        return "You can't remember that right now.", False
+    if not found:
+        return "Nothing comes back about that.", False
+    return BOOK_HEAD + "".join(f"\n\n<passage>\n{p}\n</passage>" for p in found), True
+
 # What it wrote, as a message — or nothing: told it can say nothing, Haiku has written "(silent)" or "."
 def said(content, bot_name):
     text = j.clean_llm(content or "", bot_name)
@@ -567,7 +603,10 @@ def said(content, bot_name):
 # typing: the channel's typing() — shown only for that second request. Discord shows "rocky is typing" for ~10s after
 # it's sent, and nothing stops it but a message, so shown while it decided, it lingered after a turn that only reacted.
 def tools_for(log):
-    return TOOLS if log.space else [t for t in TOOLS if t["function"]["name"] not in MEMORY_CALLS]
+    left = set() if log.space else set(MEMORY_CALLS)
+    if not rocky_book.available():
+        left.add("think_back")
+    return [t for t in TOOLS if t["function"]["name"] not in left]
 
 async def take_turn(log, waking, bot_name="rocky", typing=None):
     turn = Turn()
@@ -635,6 +674,11 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
                                                pictures=found))
                     turn.shown.append(("look", on, len(found)))
                     continue
+                if c["name"] == "think_back":
+                    result, remembered = await think_back(c["arguments"])
+                    turn.events.append(log.add("result", after=turn.events[-1], id=c["id"], content=result))
+                    turn.shown.append(("book", remembered, None))
+                    continue
                 done, result = use(log, {"function": {"name": c["name"], "arguments": c["arguments"]}}, waking)
                 turn.events.append(log.add("result", after=turn.events[-1], id=c["id"], content=result))
                 if done and done[0] == "react":
@@ -659,7 +703,8 @@ async def take_turn(log, waking, bot_name="rocky", typing=None):
 # The log's oldest half goes once it's over LOG_TOKENS: everything before a message, so no turn loses its results.
 # <memories> is rebuilt then, so what was remembered in the dropped half isn't lost with it.
 def chars(log):
-    return sum(len(e.get("text") or "") + EVENT_CHARS + sum(len(c["arguments"]) for c in e.get("calls", []))
+    return sum(len(e.get("text") or e.get("content") or "") + EVENT_CHARS
+               + sum(len(c["arguments"]) for c in e.get("calls", []))
                + PICTURE_CHARS * len(e.get("pictures") or []) for e in log.events)
 
 # A new log's size, read back from the channel's history: what a jump leaves, so it isn't cut on its first turn
