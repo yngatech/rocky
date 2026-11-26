@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from fakes import answer, isolate_rocky, openrouter, patch_all, traced
+from fakes import answer, claude, isolate_rocky, patch_all, traced
 import discord
 import rocky_bot as j
 import rocky_harness as rh
@@ -205,7 +205,7 @@ class MentionTests(_Discord):
         text = lambda log: next(e["text"] for e in log.events if e["type"] == "message")
         self.assertEqual(text(filled), "@Testbot tea or coffee?\n\nasking for a friend")
         self.assertEqual(text(filled), text(live))
-        self.assertEqual(rh.render(filled, "rocky")[2], rh.render(live, "rocky")[2])
+        self.assertEqual(rh.render(filled, "rocky")["messages"][1], rh.render(live, "rocky")["messages"][1])
 
     async def test_other_mentions_and_possessives_are_preserved(self):
         m = self.message(content="<@100000000000000001>'s friend <@!100000000000000002> likes <@&200000000000000002>", ping=True)
@@ -446,7 +446,7 @@ class WakingTests(_Discord):
             seen_while_catching_up.extend(presence.call_args_list)
 
         patch_all(self, [(j.bot, "change_presence", presence), (j.bot, "is_ready", lambda: True)])
-        with patch.object(j, "has_credit", None), patch.object(j, "credit_left", AsyncMock(return_value=5.0)), \
+        with patch.object(j, "has_credit", None), patch.object(j, "has_money", AsyncMock(return_value=True)), \
                 patch.object(j, "catch_up", catch_up), patch.object(j, "STATUS_EVERY", 0), \
                 patch.object(j, "status", discord.CustomActivity("I feel tea")), patch.object(j, "waking", True):
             self.assertEqual((j.bot.status, j.bot.activity), (discord.Status.idle, j.WAKING))  # from the first connect
@@ -570,7 +570,7 @@ class RockyHarnessTests(_Handling):
         llm = AsyncMock(return_value=answer("Is good."))
         with patch.object(j, "llm_message", llm):
             await j.handle(self.said("thanks rocky"))
-        latest = j.text_of(llm.await_args.args[0][-1]["content"])
+        latest = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
         self.assertIn('<deleted id="1"/>', latest)
         self.assertIn('<reaction from="Moss" emoji="😂" on="your message: Hunter. Is name."/>', latest)
 
@@ -591,7 +591,7 @@ class RockyHarnessTests(_Handling):
         llm = AsyncMock(return_value=answer("Rocky not scared. Rocky worried."))
         with patch.object(j, "llm_message", llm):
             await j.handle(m)
-        request = llm.await_args.args[0]
+        request = llm.await_args.kwargs["messages"]
         self.assertEqual([j.text_of(x["content"]) for x in request if x["role"] == "assistant"],
                          ["I feel bad. AI copy self, no need human."])
         self.assertIn('reply_to="your message: I feel bad. AI copy self, no need human."', j.text_of(request[-1]["content"]))
@@ -676,7 +676,7 @@ class RockyHarnessTests(_Handling):
         self.assertEqual(asked.reply.call_args.args[0], "Rocky look. Back is empty, question.")
         # its log has the message as it was first sent, and the edit as what woke it
         n = rh.logs[self.channel.id].ids[str(asked.id)]
-        sent = j.text_of(llm.await_args.args[0][-1]["content"])
+        sent = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
         self.assertRegex(sent, rf'<message id="{n}" from="pip" at="[0-9:]+">can you look in the back\?</message>\n'
                                rf'<edit id="{n}" to="you" woke_you="yes">can you look in the back testbot\?</edit>$')
         self.assertTrue(j.channel_history[self.channel.id][-1]["to_bot"])
@@ -765,27 +765,24 @@ class KeepWarmTests(_Handling):
         self.partials = {}
         self.channel.get_partial_message = lambda i: self.partials.setdefault(i, Mock(add_reaction=AsyncMock()))
 
-    # OpenRouter: Rocky answers a turn; a warm-up (one token at most) stops at its first, having read its prompt — or,
-    # with self.held set, not until the test sets it
+    # The API: Rocky answers a turn; a warm-up (no output) reads its prompt into the cache and stops — or, with
+    # self.held set, not until the test sets it
     held = None
-    WARMED = {"choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "length",
-                           "native_finish_reason": "max_tokens"}],
-              "usage": {"prompt_tokens": 9000, "completion_tokens": 1, "cost": 0.0008,
-                        "prompt_tokens_details": {"cached_tokens": 8996, "cache_write_tokens": 0}}}
+    WARMED = answer(stop="max_tokens", uncached=4, cached=8996, output=0)
+    WARM_COST = (4 * .10 + 8996 * .01) / 1e6
 
     def api(self, body):
         self.requests.append((self.now, copy.deepcopy(body)))
-        if body["max_tokens"] == 1 and self.held:
+        if body["max_tokens"] == 0 and self.held:
             return self.held_warm_up(self.held)
-        if body["max_tokens"] == 1:
-            return 200, self.WARMED
-        return 200, {"choices": [{"message": answer("Granite. Strong, strong, strong."), "finish_reason": "stop"}],
-                     "usage": {"prompt_tokens": 9000, "completion_tokens": 20, "cost": 0.0016}}
+        if body["max_tokens"] == 0:
+            return self.WARMED
+        return answer("Granite. Strong, strong, strong.")
 
     async def held_warm_up(self, release):
         self.holding.set()
         await release.wait()
-        return 200, self.WARMED
+        return self.WARMED
 
     def said(self, *args, **kwargs):
         m = super().said(*args, **kwargs)
@@ -798,16 +795,16 @@ class KeepWarmTests(_Handling):
             await j.keep_warm.coro()
 
     def warm_ups(self):
-        return [(when, body) for when, body in self.requests if body["max_tokens"] == 1]
+        return [(when, body) for when, body in self.requests if body["max_tokens"] == 0]
 
     def prompt(self, body):
         return "\n".join(j.text_of(m.get("content")) for m in body["messages"])
 
-    def same_request(self, warm, turn):  # all a cache entry depends on: OpenRouter's body but for max_tokens
+    def same_request(self, warm, turn):  # all a cache entry depends on: the request but for max_tokens
         return {k: v for k, v in warm.items() if k != "max_tokens"} == {k: v for k, v in turn.items() if k != "max_tokens"}
 
     async def test_a_quiet_channel_is_kept_warm_for_over_a_day_after_its_last_turn(self):
-        with openrouter(self.api):
+        with claude(self.api):
             m = self.said("which rock is best")
             await j.respond(m)
             (_, turn), = self.requests
@@ -867,7 +864,7 @@ class KeepWarmTests(_Handling):
             await j.on_raw_message_delete(SimpleNamespace(channel_id=self.channel.id, message_id=brb.id))
             again = self.said("and the worst rock?")
             await j.respond(again)
-            self.assertFalse(self.requests[-1][1]["max_tokens"] == 1)
+            self.assertFalse(self.requests[-1][1]["max_tokens"] == 0)
             self.assertNotIn("dinner", self.prompt(self.requests[-1][1]))
 
         traces = [json.loads(line) for path in sorted((self.dir / "logs").glob("*.jsonl"))
@@ -875,13 +872,13 @@ class KeepWarmTests(_Handling):
         warm = [t for t in traces if t.get("warm")]
         self.assertEqual(len(warm), warmed)
         self.assertEqual({(t["channel_id"], t["cost"], t["api_calls"][0]["purpose"]) for t in warm},
-                         {(self.channel.id, 0.0008, "warm")})
+                         {(self.channel.id, self.WARM_COST, "warm")})
         # a warm-up isn't one of Rocky's turns on its page, nor found by an action on a message
         self.assertEqual(len(rocky_viewer.Files(self.dir).turns()), 2)
         latest = j.find_trace(self.channel.id, self.sent, lambda t: t.get("reply"))
         self.assertEqual(latest["warm_ups"], warmed)
         kept = next(f for f in j.stats_response(latest).fields if f.name == "Kept warm")
-        self.assertEqual(kept.value, f"{warmed} warm-ups since the turn before · {j.money(0.0008 * warmed)}")
+        self.assertEqual(kept.value, f"{warmed} warm-ups since the turn before · {j.money(self.WARM_COST * warmed)}")
 
     async def test_after_a_restart_it_carries_on_from_what_was_saved_a_channel_at_a_time(self):
         channels = {}
@@ -889,7 +886,7 @@ class KeepWarmTests(_Handling):
             channel = self.channel if cid == 300 else Mock(id=cid)
             channel.name, channel.guild, channel.typing = name, self.guild, lambda: contextlib.nullcontext()
             channels[name] = channel
-        with openrouter(self.api):
+        with claude(self.api):
             self.now = self.T - timedelta(hours=2)
             await j.respond(self.said("is basalt good", channel=channels["kitchen"]))
             self.now = self.T
@@ -994,7 +991,7 @@ class AppHistoryTests(_Handling):
         llm = AsyncMock(return_value=answer("Congrats, synthetic-user!"))
         with patch.object(j, "llm_message", llm):
             await j.handle(question)
-        chat = j.text_of(llm.await_args.args[0][-1]["content"])
+        chat = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
         self.assertIn('from="Milestone App"', chat)
         self.assertIn(">[embed: Contribution milestone synthetic-user passed 1,000 contributions.]</message>", chat)
         self.assertIn("say congrats", chat)
@@ -1185,7 +1182,7 @@ class NoContextThreadTests(_Handling):
         llm = AsyncMock(return_value=answer("Think good."))
         with patch.object(j, "llm_message", llm):
             await j.handle(q)
-        self.assertNotIn("secret plan", str(llm.await_args.args[0]))
+        self.assertNotIn("secret plan", str(llm.await_args.kwargs["messages"]))
 
     async def test_rocky_in_the_thread_has_no_memories(self):
         rh.use(rh.Log("bot-spam", "400", self.channel.id),
@@ -1197,10 +1194,10 @@ class NoContextThreadTests(_Handling):
         thread = self.threads[q.id]
         self.assertEqual(thread.send.call_args.args[0], "Nothing. New friend.")
         self.partials[q.id].add_reaction.assert_awaited_once_with("🪨")  # on the message the thread is on
-        request, tools = llm.await_args.args[0], llm.await_args.kwargs["tools"]
+        request, tools = llm.await_args.kwargs["messages"], llm.await_args.kwargs["tools"]
         self.assertNotIn("soup", str(request))
         self.assertNotIn("<memories>", str(request))
-        self.assertNotIn("remember", [t["function"]["name"] for t in tools])
+        self.assertNotIn("remember", [t["name"] for t in tools])
         log = rh.logs[thread.id]
         self.assertEqual([(e["type"], e.get("text")) for e in log.events],
                          [("message", "@Testbot what do you know about me"), ("rocky", "Nothing. New friend."),
@@ -1214,7 +1211,7 @@ class NoContextThreadTests(_Handling):
         with patch.object(j, "llm_message", llm):
             await j.on_message(follow)
         self.assertEqual(follow.reply.call_args.args[0], "Rocks good.")
-        self.assertNotIn("<memories>", str(llm.await_args.args[0]))
+        self.assertNotIn("<memories>", str(llm.await_args.kwargs["messages"]))
         self.assertIsNone(rh.logs[thread.id].space)
         self.assertEqual(rh.memory("400")["facts"][0]["fact"], "likes soup")
 
@@ -1250,10 +1247,10 @@ class NoContextThreadTests(_Handling):
         with patch.object(j, "llm_message", llm):
             await j.handle(q)
         self.assertEqual(q.reply.call_args.args[0], "Granite.")
-        people = [m for m in llm.await_args.args[0] if m["role"] == "user"]
+        people = [m for m in llm.await_args.kwargs["messages"] if m["role"] == "user"]
         self.assertEqual(len(people), 1)  # just the question: no memories, nothing from before
         self.assertIn("favourite rock?", j.text_of(people[0]["content"]))
-        self.assertIn("This is #favourite rock? on Discord", j.text_of(llm.await_args.args[0][0]["content"]))  # as a thread is
+        self.assertIn("This is #favourite rock? on Discord", j.text_of(llm.await_args.kwargs["system"]))  # as a thread is
         self.assertEqual(rh.logs[self.channel.id].events, [])  # nor is it in the DM's log
         rh.flush()
         self.assertEqual(list(Path(rh.LOG_DIR).glob("*")), [])  # and its own is never saved

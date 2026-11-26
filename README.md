@@ -1,6 +1,6 @@
 # rocky
 
-Discord bot named after Rocky, the Eridian engineer from *Project Hail Mary*: Claude Haiku on OpenRouter as Rocky himself ("Is called Biscuit. Small predator, no respect for hot liquid."), an agent with its own log of each channel, tools and memories.
+Discord bot named after Rocky, the Eridian engineer from *Project Hail Mary*: Claude Haiku, on Anthropic's Messages API, as Rocky himself ("Is called Biscuit. Small predator, no respect for hot liquid."), an agent with its own log of each channel, tools and memories.
 
 Forked from [lyramakesmusic/jevbot](https://github.com/lyramakesmusic/jevbot), where it began as Jev, [TypeSafe's](https://openrouter.ai/~typesafe/jev-latest) decision model made to talk one word at a time ("Band is from california in san los angeles. Las angels."). Jev wrote here until October 2026; it's in the git history.
 
@@ -18,14 +18,14 @@ Create `.env`:
 
 ```
 DISCORD_TOKEN_JEV=your_discord_bot_token
-OPENROUTER_API_KEY=your_openrouter_key
-OPENROUTER_API_KEY_EVAL=another_openrouter_key
+ANTHROPIC_API_KEY=your_claude_api_key
+ANTHROPIC_API_KEY_EVAL=another_claude_api_key
 STATUS_CHANNEL_ID=channel_to_post_statuses_in
 TIMEZONE=Europe/London
 ROCKY_VIEWER_PORT=8350
 ```
 
-- `OPENROUTER_API_KEY` is the bot's. `rocky_replay.py` uses `OPENROUTER_API_KEY_EVAL`, so each key can have its own credit limit and its usage shows up separately. With your own Anthropic keys on OpenRouter (BYOK), give each OpenRouter key its own Anthropic key from its own Claude Console workspace, so tests show up apart there too and can't use up the bot's rate limit.
+- `ANTHROPIC_API_KEY` is the bot's, and it won't start without one. `rocky_replay.py` uses `ANTHROPIC_API_KEY_EVAL`, and won't run without it rather than use the bot's. Make each in its own Claude Console workspace, so replays have their own usage, limits and cache, and can't use up the bot's rate limit.
 - `STATUS_CHANNEL_ID` (optional): each new status is also posted there (see Status).
 - `TIMEZONE` (an IANA name, UTC if unset): the clock the times in Rocky's log and the bar's hours are on.
 - `ROCKY_VIEWER_PORT` (off if unset): serves the page of Rocky's logs on that port while the bot runs (see Rocky's logs).
@@ -65,8 +65,8 @@ Rocky can ping people by writing `@` and their full display name (`@Pip Meadow, 
 Right-click (long-press on mobile) a reply, the message that woke Rocky, or a posted status and pick from **Apps** for answers only you see:
 
 - **Context**: the request the model was sent, a block for each message as it went: for Rocky's turn, the people's message that woke it, each of its messages with its tool calls' JSON, each tool's result and what it said; for a status, what it was asked and what it wrote. What came before is a line each: the system prompt by its length, `<memories>` by how many facts, and how many earlier messages, which are attached as `context.txt` with the turn. Neither the system prompt nor the memories are shown, nor what a note says, nor any thinking, only how many blocks there were. A block too long for Discord has its middle cut. Below are the model, message count, output tokens, input against the model's window, and the input cache: how much was read from it, written to it and neither. Turns logged before Context kept the request show the log as text.
-- **Stats**: the model, total recorded cost in USD (every logged attempt, including costs billed to a linked provider key), and context usage of the final request. For a Rocky turn, also the warm-ups that kept its cache warm since the turn before (below), and what they cost.
-- **Diagnostics**: request counts and purposes, elapsed time, model IDs, billing, cache and output details, retries, and why an LLM request stopped early (a refusal is also logged as a warning with its reason, provider and generation id, never what was said).
+- **Stats**: the model, total recorded cost in USD (every logged request, priced from the tokens Anthropic reports with `PRICES` in `rocky_bot.py`; through OpenRouter, what it billed), and context usage of the final request. For a Rocky turn, also the warm-ups that kept its cache warm since the turn before (below), and what they cost.
+- **Diagnostics**: request counts and purposes, elapsed time, model IDs, billing, cache and output details, retries, and why an LLM request stopped early (a refusal is also logged as a warning with its category and message id, never what was said, and nothing of it is posted or kept).
 
 These all read the last `LOG_DAYS` (7) of `logs/`, finding the message by its id, and make no model requests. Everyone who can use apps in a channel sees the actions; a server can limit them in **Server Settings → Integrations**. The bot registers them each time it starts, so an open Discord client may need reloading (Ctrl+R) the first time.
 
@@ -85,8 +85,8 @@ Haiku is Rocky, in every channel and DM. Each channel is Rocky's own conversatio
   - For `bar`, `order`, `look` and `think_back`, what Rocky writes waits for the result, so it can't promise a pint the bar won't serve.
 - **Memories**: facts are kept in `rocky_memories.json` (gitignored), shared by a server's channels, each DM its own. They're shown in a `<memories>` block before the log, a snapshot only rebuilt after a quiet stretch (below); facts kept or forgotten since are in the log as its calls.
 - **The cache**: nothing earlier in the log is ever rewritten, so each request starts with the one before it and the prompt cache covers all but the newest events. The cache is only rebuilt when the log outgrows `LOG_TOKENS` (90K, counted at `CHARS_PER_TOKEN`, 2.2 characters a token; set in `/settings`) and its oldest half goes, or after an hour without a request, when it has expired anyway. A picture Rocky looked at counts ~1400 tokens. A deleted message is marked straight away (`<deleted id="12"/>`), since Rocky already saw it, and blanked, with its edits, after a quiet stretch: at the next warm-up, or at a turn after the cache has gone.
-- **Keeping it warm**: so a reply after a quiet hour isn't read in full (~6s and ~$0.015 on a 75K log, against ~2.5s and ~$0.0008), a channel Rocky took a turn in within `KEEP_WARM_HOURS` (25: a day, and an hour for people who come back at about the same time the next day; 0 for none) gets a warm-up 50 minutes after its last request: the request its last turn made, up to that turn's cache mark, for one output token that's thrown away. Reading the log resets the cache's hour, at the cache-read price (~$0.0008 on a 75K log; reads don't count towards Anthropic's input tokens a minute). One channel a minute, none while a turn or status is being made or out of credit, and after a restart only those whose hour isn't up. Each is its own line in `logs/` (`"warm": true`), never a turn on the Rocky page or in the actions. Over two weeks of the live bot, it would have sent ~33 a day for ~$0.02, and made 13 of 18 cold replies warm.
-- **Updates**: when the bot starts on new code, each log is told of commits to `rocky_harness.py` since it last was, by subject alone (`<update>give Rocky a bar to order drinks from</update>`), so Rocky knows what changed if asked but doesn't announce it.
+- **Keeping it warm**: so a reply after a quiet hour isn't read in full (~6s and ~$0.015 on a 75K log, against ~2.5s and ~$0.0008), a channel Rocky took a turn in within `KEEP_WARM_HOURS` (25: a day, and an hour for people who come back at about the same time the next day; 0 for none) gets a warm-up 50 minutes after its last request: the request its last turn made, up to that turn's cache mark, with no output (`max_tokens` 0). Reading the log resets the cache's hour, at the cache-read price (~$0.0008 on a 75K log; reads don't count towards Anthropic's input tokens a minute). One channel a minute, none while a turn or status is being made or out of credit, and after a restart only those whose hour isn't up. Each is its own line in `logs/` (`"warm": true`), never a turn on the Rocky page or in the actions. Over two weeks of the live bot, it would have sent ~33 a day for ~$0.02, and made 13 of 18 cold replies warm.
+- **Updates**: when the bot starts on new code, each log is told of commits to `rocky_harness.py` since it last was, by subject alone (`<update>give Rocky a bar to order drinks from</update>`), so Rocky knows what changed if asked but doesn't announce it. A commit whose message has the line `Rocky-update: none` isn't told: plumbing he needn't hear of.
 
 On short synthetic chats, a turn costs ~0.036¢ and takes ~4s to reply, with 86% of the prompt read from the cache.
 
@@ -108,7 +108,7 @@ Set `STATUS_EVERY = 0`, or turn it off in `/settings`, to leave the status alone
 
 ## Logs
 
-Every message the bot handles is written as one JSON line to `logs/YYYY-MM-DD.jsonl`: who said what, the request Rocky was sent as Context shows it (`context`), what it said and reacted with, every API call with its purpose and billing (why it stopped, the provider and the generation id), and the cost, including requests billed to our own Anthropic key, which OpenRouter reports as free (`byok_cost`). A Rocky turn keeps its events from Rocky's log in `rocky_events`. `logs/` holds what people said in the server, so it's gitignored: keep it local and delete old days whenever.
+Every message the bot handles is written as one JSON line to `logs/YYYY-MM-DD.jsonl`: who said what, the request Rocky was sent as Context shows it (`context`), what it said and reacted with, every API call with its purpose, cost, why it stopped and its message id, and the cost of them all. Lines from before have OpenRouter's billing instead: what it charged and what our own Anthropic key paid (`byok_cost`), the provider and its generation id. A Rocky turn keeps its events from Rocky's log in `rocky_events`. `logs/` holds what people said in the server, so it's gitignored: keep it local and delete old days whenever.
 
 ### Rocky's logs
 
@@ -154,7 +154,7 @@ python rocky_replay.py --fresh "@rocky get me a stout"  # a short synthetic chat
 python rocky_replay.py "@rocky soup?" --with "fern: @rocky tea?"  # another to it, there before its turn
 ```
 
-A turn on the live log is ~$0.007 and ~70K input tokens on `OPENROUTER_API_KEY_EVAL`. Run them one at a time: the first of a run writes the log to the cache, which counts towards Anthropic's input tokens a minute. Its output can quote the live log, so keep it local.
+A turn on the live log is ~80K input tokens on `ANTHROPIC_API_KEY_EVAL`: ~$0.016 for the first of a run, which writes the log to its workspace's cache, and ~$0.0008 after. Run them one at a time: that first one counts towards Anthropic's input tokens a minute. Its output can quote the live log, so keep it local.
 
 ## Credits
 

@@ -13,8 +13,9 @@ calls and their results, its reactions, and what it said. Nothing is written bac
 Run on master and on your branch to compare. It reads the live checkout's files (where this checkout's .env links to,
 or this one's): its Rocky log, memories, rocky_lines.txt, rocky_body.txt and the book's passages (rocky_book.json).
 What Rocky remembers from the book is only counted, never printed. A message comes 2 minutes after the log's last event,
-unless --at says when. On OPENROUTER_API_KEY_EVAL, one request at a time: a turn on the live log is ~70K tokens, and
-the first of a run writes it to the cache, which counts towards Anthropic's input tokens a minute.
+unless --at says when. On ANTHROPIC_API_KEY_EVAL, never the bot's key: it's in a workspace of its own, so its usage,
+limits and cache are apart from the bot's — the first replay of a log writes it to the cache in full. One request at a
+time: a turn on the live log is ~80K tokens, which count towards Anthropic's input tokens a minute.
 """
 
 import argparse
@@ -27,6 +28,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import anthropic
 
 import rocky_bot as j
 import rocky_book
@@ -118,11 +121,11 @@ async def main():
     if any(":" not in a for a in args.also):
         ap.error("--with takes AUTHOR: TEXT")
     also = [tuple(x.strip() for x in a.split(":", 1)) for a in args.also]
-    # Its own key, so replays have their own limits and usage on OpenRouter and Anthropic, apart from the bot's
-    eval_key = os.environ.get("OPENROUTER_API_KEY_EVAL")
+    # Its own key, so replays have their own limits, usage and cache, apart from the bot's
+    eval_key = os.environ.get("ANTHROPIC_API_KEY_EVAL")
     if not eval_key:
-        ap.error("set OPENROUTER_API_KEY_EVAL in .env — replays don't use the bot's OPENROUTER_API_KEY")
-    j.HEADERS = {**j.HEADERS, "Authorization": f"Bearer {eval_key}"}
+        ap.error("set ANTHROPIC_API_KEY_EVAL in .env — replays don't use the bot's ANTHROPIC_API_KEY")
+    j.client = anthropic.AsyncAnthropic(api_key=eval_key, timeout=60)
     logs = sorted((live_dir() / "rocky_logs").glob("*.json"), key=lambda p: p.stat().st_size)
     channel = args.channel or (int(logs[-1].stem) if logs else None)
     if not args.fresh and not channel:

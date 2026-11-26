@@ -2,3 +2,4 @@ discord.py>=2.5
 python-dotenv
 aiohttp
 pillow
+anthropic
