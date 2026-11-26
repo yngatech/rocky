@@ -113,7 +113,8 @@ class RenderTests(_Case):
         self.assertEqual([f["fact"] for f in rh.memory("400")["facts"]], ["likes soup"])
         # and a server's log is as it was
         self.assertIn("- remember:", j.text_of(rh.render(self.log, "rocky")[0]["content"]))
-        self.assertEqual(rh.tools_for(self.log), rh.TOOLS)
+        self.assertEqual([t["function"]["name"] for t in rh.tools_for(self.log)],  # think_back only with the book
+                         ["react", "remember", "forget", "note", "bar", "order", "look"])
 
 
 class ToolTests(_Case):
@@ -207,7 +208,7 @@ class TurnTests(_Case):
         self.assertEqual((turn.text, turn.reactions, turn.kept, turn.requests),
                          ("Biscuit. Good name.", [(1, "🐱")], [("remember", 1, "pip: has a cat called Biscuit")], 1))
         (messages, max_tokens), kwargs = llm.call_args
-        self.assertEqual((max_tokens, kwargs), (rh.MAX_TOKENS, {"tools": rh.TOOLS, "reasoning": rh.REASONING}))
+        self.assertEqual((max_tokens, kwargs), (rh.MAX_TOKENS, {"tools": rh.tools_for(self.log), "reasoning": rh.REASONING}))
         self.assertIn('woke_you="yes"', j.text_of(messages[-1]["content"]))
         # marked for the cache: without the marks, every turn read the whole log at full price
         self.assertEqual([m["content"][0]["cache_control"] for m in (messages[0], messages[1], messages[-1])], [rh.CACHE] * 3)

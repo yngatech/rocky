@@ -13,10 +13,27 @@ from pathlib import Path
 
 from fakes import Discord, answer, completion, isolate_rocky, openrouter, patch_all
 import rocky_bot as j
+import rocky_book
 import rocky_harness as rh
 
 LONG = ("Granite is hard and old and it holds up mountains. " * 50).strip()  # past Discord's 2000 characters
 OUT_OF_CREDIT = (402, {"error": {"code": 402, "message": "Insufficient credits"}})
+# A made-up book, for think_back, laid out as the novel's text is: a heading a chapter, a paragraph a line
+STORY = """Contents
+
+Chapter 1, The Keeper
+
+The lighthouse on Gull Point is three hundred years old, and I have kept its lamp for nine of them.
+
+The crab who lives under the steps is called Pinch. He mends nets for me, and he talks in clicks.
+
+Chapter 2, The Storm
+
+The storm took the boat in the night. Pinch held the rope in his big claw until I could pull it in.
+
+Dedication, The Keeper
+
+For the gulls."""
 
 
 class AnsweringTests(unittest.IsolatedAsyncioTestCase):
@@ -25,6 +42,7 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         here = tempfile.TemporaryDirectory()
         self.addCleanup(here.cleanup)
+        self.here = Path(here.name)
         self.discord = Discord(self, "bot-spam", "diary")
         isolate_rocky(self, here.name)
         patch_all(self, [(j, "LOG_DIR", Path(here.name) / "logs"), (j, "STATUS_PATH", Path(here.name) / "status.json"),
@@ -149,6 +167,60 @@ class AnsweringTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Biscuit. Good name.", sent)
         self.assertIn("Rocky pick number. Secret. Bar closed until four, sad sad sad.", sent)
         self.assertNotIn("-#", sent)
+
+    async def test_rocky_thinks_back_to_the_book_and_answers_in_his_own_words(self):
+        # Without the book he can't think back, and nothing he's told mentions it
+        with openrouter((200, completion(answer("Rocky not know.")))) as s:
+            await j.on_message(self.discord.say("bot-spam", "pip", "how old is the lighthouse?"))
+        self.assertNotIn("think_back", json.dumps(s.post.call_args.kwargs["json"]))
+
+        (self.here / "book.txt").write_text(STORY)
+        rocky_book.build(self.here / "book.txt", rocky_book.INDEX_PATH)
+        with openrouter((200, completion(answer("Very old!", [("think_back", {"what": "how old the lighthouse is"})]))),
+                        (200, completion(answer("Three hundred years. Older than me, almost.")))) as s:
+            asked = self.discord.say("bot-spam", "pip", "how old is the lighthouse really?")
+            await j.on_message(asked)
+        first, second = (c.kwargs["json"] for c in s.post.call_args_list)
+        self.assertIn("think_back", [t["function"]["name"] for t in first["tools"]])
+        self.assertIn("- think_back:", first["messages"][0]["content"][0]["text"])
+        # The passages reach him in the request after his call, and what he guessed before them isn't posted
+        told = second["messages"][-1]
+        self.assertEqual((told["role"], told["tool_call_id"]), ("tool", "call_0"))
+        self.assertTrue(told["content"].startswith(rh.BOOK_HEAD))
+        self.assertIn("three hundred years old", told["content"])
+        self.assertNotIn("For the gulls", told["content"])  # the book ends where the story does
+        [reply] = self.discord.answer(asked)
+        self.assertEqual(reply.content, "Three hundred years. Older than me, almost.\n-# 📖 checked the book")
+
+        # Context is posted in Discord: it shows that he thought back, but never the book's words
+        context = []
+        await j.context_action.callback(self.discord.interaction(reply, context), reply)
+        shown = json.dumps([(text, embed, {k: v.decode() for k, v in files.items()}) for text, embed, files in context],
+                           ensure_ascii=False)
+        self.assertIn("1 passage from the book, not shown", shown)
+        self.assertNotIn("lighthouse on Gull Point", shown)
+
+        # His log read back from Discord after a restart has his reply, and not the line under it
+        rh.flush()
+        rh.logs.clear()
+        (rh.LOG_DIR / f"{asked.channel.id}.json").unlink()
+        j.channel_history.clear()
+        j.history_loaded.clear()
+        with openrouter((200, completion(answer("Pinch.")))) as s:
+            await j.on_message(self.discord.say("bot-spam", "pip", "who mends the nets?"))
+        sent = json.dumps(s.post.call_args.kwargs["json"]["messages"], ensure_ascii=False)
+        self.assertIn("Three hundred years. Older than me, almost.", sent)
+        self.assertNotIn("📖", sent)
+
+        # A book he can't read fails the call, not the turn: he's told, and says so himself
+        rocky_book.INDEX_PATH.write_text('{"passages": "not a list"}')
+        with openrouter((200, completion(answer(calls=[("think_back", {"what": "the storm"})]))),
+                        (200, completion(answer("Rocky not remember storm now.")))) as s:
+            asked = self.discord.say("bot-spam", "pip", "what happened in the storm?")
+            await j.on_message(asked)
+        self.assertEqual(s.post.call_args.kwargs["json"]["messages"][-1]["content"], "You can't remember that right now.")
+        self.assertEqual([m.content for m in self.discord.answer(asked)],
+                         ["Rocky not remember storm now.\n-# 📖 couldn't check the book"])
 
     async def test_the_actions_explain_what_was_posted(self):
         answered, status = await self.conversation()
