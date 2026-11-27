@@ -87,16 +87,23 @@ class ReplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("anyone watching the match tonight", text)
         self.assertIn('at="19:00"', text)
 
-    async def test_a_picture_gets_one_photo_tag(self):
+    async def test_a_picture_gets_one_tag_on_its_message(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
-        image = Path(d.name) / "dot.png"
+        image, gif = Path(d.name) / "dot.png", Path(d.name) / "blink.gif"
         rh.Image.new("RGB", (8, 8), "red").save(image)
+        rh.Image.new("RGB", (8, 8), "red").save(gif, save_all=True, append_images=[rh.Image.new("RGB", (8, 8), "blue")])
         for said in ("rocky look", "rocky [photo]"):
             llm, _ = await self.run_main("--fresh", "--image", str(image), said)
             text = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
             self.assertEqual(text.count("[photo]"), 1, said)
-
+        # a gif said in passing, before: it's there to look at, on that message
+        llm, out = await self.run_main("--fresh", "--image", str(gif), "--chat", "fern: lol", "rocky hi")
+        text = j.text_of(llm.await_args.kwargs["messages"][-1]["content"])
+        self.assertRegex(text, r'<message id="4" from="fern" at="[0-9:]+">lol \[gif\]</message>\n<message id="5"[^>]*woke_you')
+        found = await rh.pictures(None, 4)
+        self.assertEqual([k for _, k in found], [2])
+        self.assertIsNone(await rh.pictures(None, 5))
 
 if __name__ == "__main__":
     unittest.main()

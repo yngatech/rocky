@@ -80,7 +80,7 @@ Haiku is Rocky, in every channel and DM. Each channel is Rocky's own conversatio
   - `react` puts an emoji on any message in the log: alongside its words, or on its own when words would add nothing. After reacting it can still speak, or say nothing and let the reaction answer.
   - `remember` keeps a short fact about someone, itself or a topic; `forget` drops one.
   - `bar` and `order` are for drinks at The Hail Mary, a made-up pub with a menu and prices, hours on the `TIMEZONE` clock, and days it doesn't open or a drink has run out (picked from the date, so the same all day).
-  - `look` shows it the pictures in a message: its images, its embeds' (a Tenor gif, a link preview) and its stickers, up to 4, fetched again from Discord and shrunk to 1024px (a gif's first frame). Until then a picture is only its `[photo]` tag.
+  - `look` shows it the pictures in a message: its images, its embeds' (a gif, a link preview) and its stickers, up to 4, fetched again from Discord and shrunk to 1024px. A moving picture (a gif, an animated WebP or PNG) is one picture of up to 9 of its frames, evenly through it from first to last, 3 to a row, and it's told they're moments of it in order: an attachment's, Klipy's (the picker's gifs, whose preview is the animated gif itself) and Tenor's (whose preview is a still, so the gif beside it is fetched instead). Only a gif's first ~50M pixels or 1000 frames are decoded, so a huge one is seen up to there. Until it looks, a picture is only its tag (`[photo]`, `[gif: …]`).
   - `think_back` finds the passages of the novel that best match what Rocky wants to remember (BM25 over 200-word passages), and gives him the best 3 as Grace's telling of what he lived. They stay in his log like a look's pictures, but Context shows only that he thought back.
   - For `bar`, `order`, `look` and `think_back`, what Rocky writes waits for the result, so it can't promise a pint the bar won't serve.
 - **Memories**: facts are kept in `rocky_memories.json` (gitignored), shared by a server's channels, each DM its own. They're shown in a `<memories>` block before the log, a snapshot only rebuilt after a quiet stretch (below); facts kept or forgotten since are in the log as its calls.
@@ -149,6 +149,7 @@ They use synthetic logs, Discord messages and API results: `test_harness.py` for
 python rocky_replay.py "@rocky how are you doing?" "lol rocky"
 python rocky_replay.py -n 3 --file scenarios.txt       # one message a line
 python rocky_replay.py --image cat.png "@rocky what's this"  # sent with a synthetic picture, for look
+python rocky_replay.py --image dance.gif --chat "fern: [gif: dance]" "@rocky hi"  # the picture said in passing
 python rocky_replay.py --at "2026-10-16 19:00" "rocky get us a beer"
 python rocky_replay.py --fresh "@rocky get me a stout"  # a short synthetic chat instead of the live log
 python rocky_replay.py "@rocky soup?" --with "fern: @rocky tea?"  # another to it, there before its turn

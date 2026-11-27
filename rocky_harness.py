@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 import rocky_book
 
@@ -56,6 +56,12 @@ PICTURES = 4                # most pictures a look shows, from one message
 PICTURE_SIDE = 1024         # a picture's longest side, shrunk to it — ~1400 tokens at most, square; text in a
                             # screenshot or meme still reads
 PICTURE_BYTES = 20_000_000  # most of a picture downloaded
+FRAMES = 9                  # a gif is seen as this many of its frames, evenly through it with the first and last,
+                            # 3 to a row in one picture: a 640×358 gif's 9 are ~790 tokens, where its first frame was
+                            # ~300 and a photo is ~1400. With 6, a mic drop's mic in the air fell between them
+FRAME_PIXELS = 50_000_000   # most of a gif decoded, its frames × their size — each is decoded from the one before —
+FRAME_COUNT = 1000          # and most of its frames: ~0.3s of CPU at most, and a gif bigger is seen up to there.
+                            # Counting its frames still reads all of it: ~1s for 20MB of 1-pixel frames
 PICTURE_CHARS = 1400 * 2.2  # a picture in the log, counted as text for its size (chars): its most tokens, in chars
 SAVE_AFTER = 2              # seconds after a change before a log or the memories are written, so a burst writes once
 # It thinks first. Without thinking, Haiku narrated in 3 of 57 eval turns ("Pip asked a plain question, so I answer
@@ -102,7 +108,11 @@ NO_UPDATE = "Rocky-update: none"     # a line of its own in a commit's message k
 # what they asked, not everything it tells him, he thought back for 4.
 # look: until it looks, a picture is a [photo] tag. Told to look and write nothing yet, on the live log it looked at a
 # synthetic photo sent to it 6 times in 6 and said what was in it (pepperoni pizza; a sign's words); with no picture,
-# it didn't look.
+# it didn't look. A gif (public ones) sent to it, it looked at 16 of 16 times on a fresh chat and the live log, and
+# seeing 9 of its frames said what happens in it (a mic thrown, a bear tumbling away) all 16; shown its first frame,
+# 0 of 9 did. Asked what's in one said before, it looked 15 of 15; one said in passing, 0 of 6. Told they were "moments
+# from it in order, left to right and then down", it narrated its turn ("Rocky answers Pip") 4 of 9 times asked on a
+# fresh chat; told "9 moments of it in order", 2 of 16, and 0 of 4 live (with the first frame, 0 of 12 fresh).
 # Reacting, then speaking: a response ends at its first tool call, and it reacts before it writes. While a reaction
 # ended its turn, told to write first or not, 1 of 729 live turns reacted and spoke, and 246 only reacted, to questions
 # too. Now it sees what a reaction did, as after any call, and speaks then. Replayed on the live log (8 questions, 4
@@ -545,8 +555,12 @@ def use(log, call, waking):
     except (ValueError, KeyError, TypeError) as e:
         return None, f"That didn't work: {e!r}"
 
-# The pictures in a Discord message: its images, its embeds' (a gif's from Tenor, a link's preview) and its stickers.
-# Fetched again when it looks: attachment links expire after a day or so.
+# A Tenor gif's embed has only a still (…AAAAe/name.png) and an MP4; the same gif is at …AAAAd/name.gif. Klipy's, from
+# Discord's picker, have the moving gif itself (an animated WebP) as their thumbnail.
+TENOR_STILL = re.compile(r"^(https://media\d*\.tenor\.com/[\w-]+)AAAAe/([^/?#]+)\.png$")
+
+# The pictures in a Discord message, each a (data: URL, how many frames it shows): its images, its embeds' (a gif, a
+# link's preview) and its stickers. Fetched again when it looks: attachment links expire after a day or so.
 async def pictures(log, n):
     if not isinstance(n, int) or not (discord_id := log.discord_id(n)):
         return None
@@ -561,9 +575,15 @@ async def pictures(log, n):
         for url in dict.fromkeys(urls):
             if len(found) == PICTURES:
                 break
-            async with session.get(url, timeout=j.aiohttp.ClientTimeout(total=30)) as r:
-                if r.status == 200 and (picture := shrunk(await body(r))):
-                    found.append(picture)
+            for u in dict.fromkeys((TENOR_STILL.sub(r"\1AAAAd/\2.gif", url), url)):  # Tenor's gif, else its still
+                try:
+                    async with session.get(u, timeout=j.aiohttp.ClientTimeout(total=30)) as r:
+                        if r.status == 200 and (picture := await asyncio.to_thread(shrunk, await body(r))):
+                            found.append(picture)
+                            break
+                except (j.aiohttp.ClientError, asyncio.TimeoutError):
+                    if u == url:
+                        raise
     return found
 
 # A response's body, up to PICTURE_BYTES. One content.read gives only what's arrived so far, and a photo cut short
@@ -574,20 +594,34 @@ async def body(r):
         data += chunk
     return bytes(data)
 
-# A picture as a JPEG data: URL, no bigger than PICTURE_SIDE — a gif's first frame. None if it isn't one.
+# A picture as a JPEG data: URL no bigger than PICTURE_SIDE, and how many frames it shows: a gif's (or animated WebP's
+# or PNG's) FRAMES, 3 to a row in order, or those that could be read of one cut short. None if it isn't a picture.
+# CPU-bound: run it in a thread.
 def shrunk(data):
+    frames, gap = [], 4
     try:
         img = Image.open(io.BytesIO(data))
-        img.seek(0)
-        img = img.convert("RGBA")
-    except (UnidentifiedImageError, OSError, ValueError):
-        return None
-    img.thumbnail((PICTURE_SIDE, PICTURE_SIDE))
-    flat = Image.new("RGB", img.size, "white")  # a sticker's see-through parts
-    flat.paste(img, mask=img.getchannel("A"))
+        try:  # not a multi-page TIFF's pages
+            n = img.n_frames if img.format in ("GIF", "WEBP", "PNG") else 1
+        except Exception:  # cut short where it can't count them: its first frame
+            n = 1
+        n = max(1, min(n, FRAME_COUNT, FRAME_PIXELS // max(1, img.width * img.height)))
+        picks = sorted({round(k * (n - 1) / (FRAMES - 1)) for k in range(FRAMES)})
+        cols, rows = min(3, len(picks)), -(-len(picks) // 3)
+        for i in picks:
+            img.seek(i)
+            frames.append(img.convert("RGBA"))
+            frames[-1].thumbnail(((PICTURE_SIDE + gap) // cols - gap, (PICTURE_SIDE + gap) // rows - gap))
+    except Exception:  # not a picture, or cut short, or broken: what could be read of it
+        if not frames:
+            return None
+    cols, rows, (w, h) = min(3, len(frames)), -(-len(frames) // 3), frames[0].size
+    sheet = Image.new("RGB", (cols * (w + gap) - gap, rows * (h + gap) - gap), "white")  # and a sticker's see-through parts
+    for k, frame in enumerate(frames):
+        sheet.paste(frame, (k % 3 * (w + gap), k // 3 * (h + gap)), mask=frame.getchannel("A"))
     out = io.BytesIO()
-    flat.save(out, "JPEG", quality=85)
-    return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
+    sheet.save(out, "JPEG", quality=85)
+    return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode(), len(frames)
 
 # look: the result's text, and its pictures
 async def look(log, arguments, waking):
@@ -606,7 +640,12 @@ async def look(log, arguments, waking):
         return n, f"No message {n} to look at.", []
     if not found:
         return n, f"Message {n} has no pictures.", []
-    return n, f"Message {n}'s {'picture' if len(found) == 1 else f'{len(found)} pictures'}:", found
+    moving = "moments of it in order"
+    if len(found) > 1:
+        text = f"Message {n}'s {len(found)} pictures{f' (a gif as {moving})' if any(k > 1 for _, k in found) else ''}:"
+    else:
+        text = f"Message {n}'s {'picture' if found[0][1] == 1 else f'gif: {found[0][1]} {moving}'}:"
+    return n, text, [url for url, _ in found]
 
 # think_back: what comes back, and whether anything did. The search is in a thread, so the loop goes on meanwhile.
 async def think_back(arguments):
