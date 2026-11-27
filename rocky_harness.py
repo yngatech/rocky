@@ -97,6 +97,9 @@ NO_UPDATE = "Rocky-update: none"     # a line of its own in a commit's message k
 # to think back "even when you think you know", he did for 18 of 24 fresh and 21 of 24 live; never for everyday chat
 # or the bar, nor on a fresh chat for what his facts say, though for 5 of 6 of those live (and answered them right).
 # Asked to look for the "words it would use", his look-ups read like the book's narration, and found more.
+# Told that what comes back is "there so you get it right, not for you to pass on", he thought back for 6 and 8 of 28
+# narrow questions on a fresh chat, where before 2 to 5, and its details came out in the answers; told only to answer
+# what they asked, not everything it tells him, he thought back for 4.
 # look: until it looks, a picture is a [photo] tag. Told to look and write nothing yet, on the live log it looked at a
 # synthetic photo sent to it 6 times in 6 and said what was in it (pepperoni pizza; a sign's words); with no picture,
 # it didn't look.
@@ -146,7 +149,7 @@ NO_MEMORIES = ("This thread is apart from the rest of the server: you have no me
                "kept for later. Never mention reacting or noting in your message.")
 MEMORY_CALLS = {"remember", "forget"}
 # The part of HARNESS for think_back — only with the book (rocky_book.available)
-BOOK_TOOL = """- think_back: remember something from your old life that your story and what you are don't say — your age, your crew, your people's ways, what happened with Grace and when, a name or word from back then. When someone asks about your past, your people or what happened, and they don't answer it, think back and write nothing yet, even when you think you know — what you don't check you often get wrong — and then answer from what you remember. Not for what your story and what you are already say, everyday chat or the bar. What comes back is Grace's telling of it: there "I" is Grace, and "Rocky" or "he" is you. It's what you lived, seen through your friend's eyes: answer from it as your own memory, in your own words: never quote it, not even a line someone says in it. Don't remember what comes back: you can always think back again. How it all ended is still only for when they ask.
+BOOK_TOOL = """- think_back: remember something from your old life that your story and what you are don't say — your age, your crew, your people's ways, what happened with Grace and when, a name or word from back then. When someone asks about your past, your people or what happened, and they don't answer it, think back and write nothing yet, even when you think you know — what you don't check you often get wrong — and then answer from what you remember. Not for what your story and what you are already say, everyday chat or the bar. What comes back is Grace's telling of it: there "I" is Grace, and "Rocky" or "he" is you. It's what you lived, seen through your friend's eyes: answer from it as your own memory, in your own words: never quote it, not even a line someone says in it. Answer only what they asked, not everything it tells you. Don't remember what comes back: you can always think back again. How it all ended is still only for when they ask.
 """
 BOOK_HEAD = "What you remember, as Grace told it: his \"I\" is Grace, and \"Rocky\" is you. Say it in your own words, never his."
 
