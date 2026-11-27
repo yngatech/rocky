@@ -4,7 +4,9 @@ The model's answers are synthetic.
     uv run --with-requirements requirements.txt python -m unittest test_harness
 """
 
+import base64
 import contextlib
+import io
 import json
 import os
 import subprocess
@@ -430,7 +432,7 @@ class LookTests(_Case):
     PICTURE = "data:image/jpeg;base64,AAAA"
 
     def png(self, size, mode="RGBA", fmt="PNG"):
-        out = __import__("io").BytesIO()
+        out = io.BytesIO()
         rh.Image.new(mode, size, (255, 128, 0, 0) if mode == "RGBA" else 7).save(out, fmt)
         return out.getvalue()
 
@@ -444,7 +446,7 @@ class LookTests(_Case):
 
     async def test_it_sees_the_pictures_before_it_speaks(self):
         turn, llm, pictures = await self.look(answer("Cute cat!", [("look", {})]), answer("Cat orange. Fat, fat, fat."),
-                                              found=[self.PICTURE])
+                                              found=[(self.PICTURE, 1)])
         self.assertEqual(pictures.await_args.args[1], 1)  # the message that woke it
         self.assertEqual((turn.text, turn.requests), ("Cat orange. Fat, fat, fat.", 2))
         self.assertEqual(j.action_lines(turn.shown), ["-# 👀 looked at the picture"])
@@ -476,45 +478,73 @@ class LookTests(_Case):
                 self.assertEqual(j.action_lines(turn.shown), ["-# 👀 couldn't see a picture"])
                 self.assertNotIn('"image"', json.dumps(llm.call_args.kwargs["messages"]))
 
-    async def test_a_messages_pictures_are_fetched_again_and_shrunk(self):
-        big, gif, text = self.png((3000, 1500)), self.png((40, 40), "P", "GIF"), b"not a picture"
-        files = {"https://cdn/a.png": big, "https://cdn/b.txt": text, "https://tenor/thumb.png": gif,
+    def animated(self, fmt, frames=30):  # frame i all grey 8i, 60×40
+        out = io.BytesIO()
+        first, *rest = [rh.Image.new("RGB", (60, 40), (8 * i,) * 3) for i in range(frames)]
+        first.save(out, fmt, save_all=True, append_images=rest, duration=40, lossless=True)
+        return out.getvalue()
+
+    async def test_it_sees_a_gif_as_moments_from_it_and_a_messages_other_pictures(self):
+        tenor = "https://media.tenor.com/abcdefghijkAAAA{}/dancing-cat.{}"
+        files = {tenor.format("d", "gif"): self.animated("GIF"),  # Tenor's still, swapped for its gif
+                 "https://cdn/a.png": self.png((3000, 1500)), "https://cdn/b.txt": b"not a picture",
+                 tenor.format("e", "png").replace("dancing", "sleepy"): self.png((40, 40), "P", "GIF"),  # no gif: the still
+                 "https://static.klipy.com/ii/x/wave.webp": self.animated("WEBP"),  # klipy's moving thumbnail
                  "https://cdn/sticker.png": self.png((160, 160))}
-        m = SimpleNamespace(
-            attachments=[SimpleNamespace(url="https://cdn/a.png", content_type="image/png"),
-                         SimpleNamespace(url="https://cdn/b.txt", content_type="text/plain")],
-            embeds=[SimpleNamespace(image=SimpleNamespace(url=None), thumbnail=SimpleNamespace(url="https://tenor/thumb.png"))],
-            stickers=[SimpleNamespace(url="https://cdn/sticker.png", format=SimpleNamespace(name="png")),
-                      SimpleNamespace(url="https://cdn/lottie.json", format=SimpleNamespace(name="lottie"))])
-        channel = SimpleNamespace(fetch_message=AsyncMock(return_value=m))
+        embed = lambda thumbnail: SimpleNamespace(image=None, thumbnail=SimpleNamespace(url=thumbnail),
+                                                  video=SimpleNamespace(url="https://cdn/clip.mp4"))
+        messages = {
+            900: SimpleNamespace(attachments=[], stickers=[], embeds=[embed(tenor.format("e", "png"))]),
+            901: SimpleNamespace(
+                attachments=[SimpleNamespace(url="https://cdn/a.png", content_type="image/png"),
+                             SimpleNamespace(url="https://cdn/b.txt", content_type="text/plain")],
+                embeds=[embed(tenor.format("e", "png").replace("dancing", "sleepy")),
+                        embed("https://static.klipy.com/ii/x/wave.webp")],
+                stickers=[SimpleNamespace(url="https://cdn/lottie.json", format=SimpleNamespace(name="lottie")),
+                          SimpleNamespace(url="https://cdn/sticker.png", format=SimpleNamespace(name="png")),
+                          SimpleNamespace(url="https://cdn/fifth.png", format=SimpleNamespace(name="png"))])}  # PICTURES
+        channel = SimpleNamespace(fetch_message=AsyncMock(side_effect=messages.get))
 
         def get(url, **k):
             r = session()  # a response is its own `async with` too
             # in pieces, as it arrives, then b"" at its end
-            chunks = [files[url][i:i + 1000] for i in range(0, len(files[url]), 1000)]
-            r.status, r.content.read = 200, AsyncMock(side_effect=chunks + [b""])
+            chunks = [files[url][i:i + 1000] for i in range(0, len(files[url]), 1000)] if url in files else []
+            r.status, r.content.read = 200 if url in files else 404, AsyncMock(side_effect=chunks + [b""])
             return r
 
         s = session()
         s.get.side_effect = get
-
-        self.said("pip", "look [photo]", 0, discord_id=900)
+        q = self.said("pip", "rocky look [gif: dancing cat]", 0, to_bot=True, discord_id=900)
+        self.said("pip", "and these [photo] [gif: sleepy] [gif: wave]", 1, discord_id=901)
+        llm = AsyncMock(side_effect=[answer(calls=[("look", {})]), answer(calls=[("look", {"message": 2})]),
+                                     answer("Cat dance. Then sleep.")])
         bot = SimpleNamespace(get_channel=lambda i: channel if i == 300 else None)
-        with patch.object(j, "bot", bot), patch.object(j.aiohttp, "ClientSession", return_value=s):
-            found = await rh.pictures(self.log, 1)
-            self.assertIsNone(await rh.pictures(self.log, 2))  # not in the log
-        channel.fetch_message.assert_awaited_once_with(900)
+        with patch.object(j, "bot", bot), patch.object(j.aiohttp, "ClientSession", return_value=s), \
+                patch.object(j, "llm_message", llm):
+            turn = await rh.take_turn(self.log, q)
+
         self.assertEqual([c.args[0] for c in s.get.call_args_list],
-                         ["https://cdn/a.png", "https://tenor/thumb.png", "https://cdn/sticker.png"])
-        sizes = [rh.Image.open(__import__("io").BytesIO(__import__("base64").b64decode(u.split(",", 1)[1]))).size
-                 for u in found]
-        self.assertEqual(sizes, [(1024, 512), (40, 40), (160, 160)])
-        self.assertTrue(all(u.startswith("data:image/jpeg;base64,") for u in found))
-        self.assertIsNone(rh.shrunk(text))
+                         [tenor.format("d", "gif"), "https://cdn/a.png", tenor.format("d", "gif").replace("dancing", "sleepy"),
+                          tenor.format("e", "png").replace("dancing", "sleepy"), "https://static.klipy.com/ii/x/wave.webp",
+                          "https://cdn/sticker.png"])
+        seen = [r["content"] for r in llm.call_args.kwargs["messages"][1:] for r in r["content"]
+                if r["type"] == "tool_result"]
+        self.assertEqual([c[0]["text"] for c in seen], [
+            "Message 1's gif: 9 moments of it in order:",
+            "Message 2's 4 pictures (a gif as moments of it in order):"])
+        pictures = [rh.Image.open(io.BytesIO(base64.b64decode(b["source"]["data"]))) for c in seen for b in c[1:]]
+        # one picture for the gif, its frames 3 to a row, the first and last of its 30 and 7 evenly between
+        self.assertEqual([p.size for p in pictures], [(188, 128), (1024, 512), (40, 40), (188, 128), (160, 160)])
+        for gif in pictures[0], pictures[3]:  # Tenor's and klipy's
+            greys = [gif.getpixel((k % 3 * 64 + 30, k // 3 * 44 + 20))[0] for k in range(9)]
+            self.assertTrue(all(abs(g - 8 * i) <= 4 for g, i in zip(greys, [0, 4, 7, 11, 14, 18, 22, 25, 29])), greys)
+        # one gif is one thing looked at, however many of its frames
+        self.assertEqual(j.action_lines(turn.shown), ["-# 👀 looked at the picture", "-# 👀 looked at 4 pictures"])
+        self.assertIsNone(rh.shrunk(files["https://cdn/b.txt"]))
 
     async def test_a_deleted_messages_pictures_go_when_the_cache_is_rebuilt(self):
         rh.logs[300] = self.log
-        await self.look(answer(calls=[("look", {})]), answer("Cat."), found=[self.PICTURE])
+        await self.look(answer(calls=[("look", {})]), answer("Cat."), found=[(self.PICTURE, 1)])
         size = rh.chars(self.log)
         self.assertGreater(size, rh.PICTURE_CHARS)  # counted at its tokens, not its base64
         rh.deleted(300, 900)

@@ -8,6 +8,7 @@ calls and their results, its reactions, and what it said. Nothing is written bac
     python rocky_replay.py --at "2026-10-16 19:00" "rocky get us a beer"
     python rocky_replay.py --fresh "@rocky get me a stout"   # a short synthetic chat instead of the live log
     python rocky_replay.py --image cat.png "@rocky what's this"  # sent with a picture, which look sees
+    python rocky_replay.py --image dance.gif --chat "fern: [gif: dance]" "@rocky hi"  # the picture said in passing
     python rocky_replay.py "@rocky soup?" --with "fern: @rocky tea?"  # another to it, there before its turn
 
 Run on master and on your branch to compare. It reads the live checkout's files (where this checkout's .env links to,
@@ -24,6 +25,7 @@ import copy
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,19 +76,23 @@ def load(live, channel_id, fresh, at):
     return log, memories, at or last + timedelta(minutes=2)
 
 
-async def replay(base, memories, text, when, author, picture=None, also=()):
+async def replay(base, memories, text, when, author, picture=None, also=(), chat=()):
     log = copy.deepcopy(base)
     rh.memories.clear()
     rh.memories.update(copy.deepcopy(memories))
     rh.memories_loaded = True
     rh.clock = lambda: when
-    # One [photo] tag for its one picture — not a second when the message already has one, or it looks for that too
-    tagged = picture and "[photo]" not in text
-    sent = log.message(author, f"{text} [photo]" if tagged else text, when, to_bot=True)
-    for who, said in also:  # came while it waited, so they're in its turn
-        log.message(who, said, when + timedelta(seconds=2), to_bot=True)
-    # Only the replayed message has a picture to see — the log's have no Discord to fetch theirs from
-    rh.pictures = AsyncMock(side_effect=lambda _, n: [picture] if picture and n == sent["n"] else None)
+    # One tag for its one picture, on the first --chat message if any — not a second when the message already has one
+    # ("[gif: dancing cat]"), or it looks for that too
+    said = [log.message(who, words, when - timedelta(seconds=30)) for who, words in chat]
+    said.append(log.message(author, text, when, to_bot=True))
+    if picture and not re.search(r"\[(photo|gif)\b", said[0]["text"]):
+        said[0]["text"] += " [gif]" if picture[1] > 1 else " [photo]"
+    sent = said[-1]
+    for who, words in also:  # came while it waited, so they're in its turn
+        log.message(who, words, when + timedelta(seconds=2), to_bot=True)
+    # Only the picture's message has one to see — the log's have no Discord to fetch theirs from
+    rh.pictures = AsyncMock(side_effect=lambda _, n: [picture] if picture and n == said[0]["n"] else None)
     turn = await rh.take_turn(log, sent)
     steps, books = [], set()
     for e in turn.events:
@@ -112,15 +118,17 @@ async def main():
     ap.add_argument("--image", help="a picture sent with each message, for look — a synthetic one, not from the chat")
     ap.add_argument("--with", dest="also", action="append", default=[], metavar="AUTHOR: TEXT",
                     help="another message to Rocky, a moment after, before its turn (repeatable)")
+    ap.add_argument("--chat", action="append", default=[], metavar="AUTHOR: TEXT",
+                    help="a message just before, not to Rocky (repeatable); --image's picture is on the first")
     args = ap.parse_args()
     messages = list(args.messages)
     if args.file:
         messages += [l.strip() for l in Path(args.file).read_text().splitlines() if l.strip() and not l.startswith("#")]
     if not messages:
         ap.error("say something to Rocky")
-    if any(":" not in a for a in args.also):
-        ap.error("--with takes AUTHOR: TEXT")
-    also = [tuple(x.strip() for x in a.split(":", 1)) for a in args.also]
+    if any(":" not in a for a in args.also + args.chat):
+        ap.error("--with and --chat take AUTHOR: TEXT")
+    also, chat = ([tuple(x.strip() for x in a.split(":", 1)) for a in given] for given in (args.also, args.chat))
     # Its own key, so replays have their own limits, usage and cache, apart from the bot's
     eval_key = os.environ.get("ANTHROPIC_API_KEY_EVAL")
     if not eval_key:
@@ -145,7 +153,7 @@ async def main():
     j.trace.set(spent)
     for text in messages:
         for i in range(args.runs):
-            turn, steps = await replay(base, memories, text, when, args.author, picture, also)
+            turn, steps = await replay(base, memories, text, when, args.author, picture, also, chat)
             shown = "".join(f"\n    {l}" for l in j.action_lines(turn.shown))
             print(f"[{text}] #{i + 1} reqs={turn.requests} react={[e for _, e in turn.reactions]} said={turn.text!r}"
                   + "".join(f"\n    {s}" for s in steps) + shown, flush=True)
